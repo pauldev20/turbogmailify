@@ -1,0 +1,52 @@
+MIME-Version: 1.0
+Date: Thu, 5 Nov 2026 10:00:00 +0100
+References: <abc@example.com>
+In-Reply-To: <abc@example.com>
+Bcc: "Boss (via AOL1)" <TOKEN_BOSS>
+Message-ID: <CAF3xyz0000@mail.gmail.com>
+Subject: Re: Hello
+From: Paul Geeser <paul@gmail.com>
+To: "Max Mustermann (via AOL1)" <TOKEN_MAX>
+Cc: "Paul (via AOL1)" <paul+a1.self@gmail.com>
+X-Gm-Message-State: AOJu0YxSyntheticFixture
+X-Google-Smtp-Source: AGHT+Synthetic
+Received: by 2002:a05:6000:1:b0:1 with SMTP id x; Thu, 5 Nov 2026 01:00:00 -0800
+Content-Type: multipart/mixed; boundary="000000000000outer"
+
+--000000000000outer
+Content-Type: multipart/alternative; boundary="000000000000inner"
+
+--000000000000inner
+Content-Type: text/plain; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+Hi Max,
+
+sounds good.
+
+On Thu, Nov 5, 2026 at 9:00=E2=80=AFAM Max Mustermann (via AOL1) <
+TOKEN_MAX> wrote:
+
+> Body line 1
+>
+
+--000000000000inner
+Content-Type: text/html; charset="UTF-8"
+Content-Transfer-Encoding: quoted-printable
+
+<div dir=3D"ltr">Hi Max,<div><br></div><div>sounds good.</div></div><br><di=
+v class=3D"gmail_quote"><div dir=3D"ltr" class=3D"gmail_attr">On Thu, Nov 5=
+, 2026 at 9:00=E2=80=AFAM Max Mustermann (via AOL1) &lt;=
+<a href=3D"mailto:TOKEN_MAX">=
+TOKEN_MAX_ENTITY</a>&gt; wrote:<br></div><blockquote class=3D"gm=
+ail_quote">Body line 1</blockquote></div>
+
+--000000000000inner--
+
+--000000000000outer
+Content-Type: application/octet-stream; name="data.bin"
+Content-Disposition: attachment; filename="data.bin"
+Content-Transfer-Encoding: base64
+
+AAFiaW5hcnkgYXR0YWNobWVudA==
+--000000000000outer--
