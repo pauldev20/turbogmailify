@@ -1,4 +1,4 @@
-module github.com/YoRyan/turbogmailify
+module github.com/pauldev20/turbogmailbridge
 
 go 1.27.0
 

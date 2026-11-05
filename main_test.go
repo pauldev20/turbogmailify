@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/YoRyan/turbogmailify/internal/mocks"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/pauldev20/turbogmailbridge/internal/mocks"
 )
 
 func createTestSession(c *configImap) *session {

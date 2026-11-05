@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/YoRyan/turbogmailify/internal/mocks"
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/pauldev20/turbogmailbridge/internal/mocks"
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
