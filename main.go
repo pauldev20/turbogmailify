@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/pauldev20/turbogmailbridge/internal/bridge"
 	"github.com/pauldev20/turbogmailbridge/internal/mocks"
 	"github.com/pelletier/go-toml/v2"
 	"golang.org/x/oauth2"
@@ -34,10 +36,12 @@ func main() {
 	ctx := context.Background()
 
 	var (
-		doAuth  bool
-		useToml bool
+		doAuth        bool
+		useToml       bool
+		doHealthcheck bool
 	)
 	flag.BoolVar(&doAuth, "auth", false, "Request access and refresh tokens from Google instead of processing mail.")
+	flag.BoolVar(&doHealthcheck, "healthcheck", false, "Exit non-zero if the bridge has not polled Gmail recently.")
 	flag.BoolVar(&useToml, "toml", false, "Process the configuration file as a TOML file, with the Secrets and Tokens sections as strings.")
 	flag.Parse()
 
@@ -60,6 +64,7 @@ func main() {
 		}
 
 		cfg.Imap = tomlCfg.Imap
+		cfg.Bridge = tomlCfg.Bridge
 
 		if tomlCfg.Secrets != "" {
 			if err := json.NewDecoder(strings.NewReader(tomlCfg.Secrets)).Decode(&cfg.Secrets); err != nil {
@@ -91,7 +96,9 @@ func main() {
 			"Google credentials ('Secrets') are missing")
 	}
 
-	if doAuth {
+	if doHealthcheck {
+		doHealthcheckAndExit(cfg)
+	} else if doAuth {
 		doRequestAuth(ctx, cfg)
 	} else {
 		doForwarding(ctx, cfg)
@@ -101,6 +108,7 @@ func main() {
 // Configuration file loaded from TOML.
 type tomlConfig struct {
 	Imap    []configImap
+	Bridge  *bridge.Config
 	Secrets string
 	Tokens  string
 }
@@ -108,6 +116,7 @@ type tomlConfig struct {
 // Configuration file loaded from JSON.
 type config struct {
 	Imap    []configImap
+	Bridge  *bridge.Config
 	Secrets any
 	Tokens  *oauth2.Token
 }
@@ -121,7 +130,8 @@ type configImap struct {
 	FailedFolders      map[string]string
 	NeverMarkSpam      map[string]bool
 	ProcessForCalendar map[string]bool
-	IdleFolder         string // folder to IDLE on; defaults to "INBOX" if empty
+	IdleFolder         string          // folder to IDLE on; defaults to "INBOX" if empty
+	Bridge             *bridge.Account // optional; requires the top-level Bridge section
 }
 
 func (c *config) getOAuthConfig() (oa *oauth2.Config) {
@@ -132,7 +142,11 @@ func (c *config) getOAuthConfig() (oa *oauth2.Config) {
 		return
 	}
 
-	oa, err = google.ConfigFromJSON(secrets, gmail.GmailInsertScope)
+	scope := gmail.GmailInsertScope
+	if c.Bridge != nil {
+		scope = c.Bridge.OAuthScope()
+	}
+	oa, err = google.ConfigFromJSON(secrets, scope)
 	if err != nil {
 		log.Fatalln("Unable to create Google OAuth2 client:", err)
 	}
@@ -189,15 +203,64 @@ func doForwarding(ctx context.Context, c *config) {
 		log.Fatalln("Unable to create Gmail client:", err)
 	}
 	gmInbox := (*gmailInboxReal)(gmService)
+	br := startBridge(ctx, c, gmService, gmInbox)
 
 	// Spin up a goroutine for each IMAP connection.
 	for _, ic := range c.Imap {
-		go doForwardingForImap(&ic, gmInbox)
+		var in gmailInbox = gmInbox
+		if ic.Bridge != nil {
+			if in, err = br.Inbox(ic.Bridge.Alias, gmInbox); err != nil {
+				log.Fatalln("Bridge:", err)
+			}
+		}
+		go doForwardingForImap(&ic, in)
 	}
 
 	// Put the main goroutine to sleep.
 	log.Println("Startup complete; waiting for mail")
 	select {}
+}
+
+// Start the outbound relay if the Bridge section is configured.
+func startBridge(ctx context.Context, c *config, gmService *gmail.Service, gmInbox gmailInbox) *bridge.Bridge {
+	var accounts []bridge.Account
+	for _, ic := range c.Imap {
+		if ic.Bridge == nil {
+			continue
+		}
+		a := *ic.Bridge
+		a.Smtp.Username = cmp.Or(a.Smtp.Username, ic.Username)
+		a.Smtp.Password = cmp.Or(a.Smtp.Password, ic.Password)
+		accounts = append(accounts, a)
+	}
+	if c.Bridge == nil {
+		if len(accounts) > 0 {
+			log.Fatalln("Failed to parse config file:", "Imap.Bridge requires the top-level Bridge section")
+		}
+		return nil
+	}
+
+	notify := func(subject, body string) {
+		if err := sendNotification(gmInbox, subject, body); err != nil {
+			log.Println("Bridge: failed to send notification:", err)
+		}
+	}
+	br, err := bridge.New(*c.Bridge, accounts, bridge.GmailAPI{S: gmService}, bridge.SMTPSender{}, notify)
+	if err != nil {
+		log.Fatalln("Bridge:", err)
+	}
+	go br.Run(ctx)
+	return br
+}
+
+func doHealthcheckAndExit(c *config) {
+	if c.Bridge == nil {
+		log.Fatalln("Healthcheck requires the Bridge section")
+	}
+	if err := bridge.Healthcheck(*c.Bridge); err != nil {
+		log.Fatalln("Unhealthy:", err)
+	}
+	os.Exit(0)
 }
 
 // Forward mail indefinitely for a configured IMAP account.
@@ -603,7 +666,7 @@ func isImportRetryable(err error) bool {
 		return gerr.Code != 400
 	}
 
-	if errors.Is(err, mocks.ErrNonRetryable) {
+	if errors.Is(err, mocks.ErrNonRetryable) || errors.Is(err, bridge.ErrPermanent) {
 		return false
 	}
 
@@ -611,6 +674,10 @@ func isImportRetryable(err error) bool {
 }
 
 func sendNotification(gm gmailInbox, subject, body string) error {
+	// Notifications are not correspondence; keep them out of the bridge.
+	if b, ok := gm.(*bridge.Inbox); ok {
+		gm = b.Next
+	}
 	envelope := fmt.Sprintf(`From: Turbogmailify <me>
 To: me
 Subject: %s
