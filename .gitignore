@@ -4,6 +4,12 @@
 # Binaries for programs and plugins
 turbogmailify
 turbogmailbridge
+
+# Real configs and bridge state never belong in Git
+*.conf
+*.toml
+!*.example.toml
+/data/
 *.exe
 *.exe~
 *.dll

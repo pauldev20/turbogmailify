@@ -1,0 +1,18 @@
+# Docker Compose example (e.g. a Dokploy "Docker Compose" app). Only outbound
+# connections are made; no ports or domains are needed.
+services:
+  turbogmailbridge:
+    build:
+      context: .
+      dockerfile: Containerfile   # or: image: ghcr.io/pauldev20/turbogmailbridge:latest
+    restart: unless-stopped
+    command: ["-toml", "/config/turbogmailbridge.toml"]
+    volumes:
+      - "../files/turbogmailbridge.toml:/config/turbogmailbridge.toml:ro"  # Dokploy file mount
+      - bridge-data:/data                                                # token.key + state.db; back this up
+    healthcheck:
+      test: ["CMD", "/main", "-healthcheck", "-toml", "/config/turbogmailbridge.toml"]
+      interval: 60s
+
+volumes:
+  bridge-data:

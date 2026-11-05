@@ -1,0 +1,63 @@
+# Example configuration. Copy to turbogmailbridge.toml (git-ignored) and run
+# with: turbogmailbridge -toml turbogmailbridge.toml
+#
+# The bridge needs the gmail.modify scope (or full mail access with
+# DeleteOriginal = true). Re-run -auth after enabling it.
+
+Secrets = '''
+{"installed":{"client_id":"xxx.apps.googleusercontent.com","client_secret":"GOCSPX-xxx","project_id":"mail-bridge","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["http://localhost"]}}
+'''
+Tokens = '''
+{"access_token":"xxx","token_type":"Bearer","refresh_token":"xxx","expiry":"2026-01-01T00:00:00Z"}
+'''
+
+[Bridge]
+GmailAddress = "you@gmail.com"
+StateDir = "/data"          # token.key + state.db; persistent, backed up
+RewriteMode = "reply-to"    # or "full" (also rewrites From)
+PollInterval = "3s"
+MaxSendsPerHour = 50
+DryRun = true               # outbound: label Bridge/DryRun, never send
+DeleteOriginal = false      # true = permanent delete (needs full mail scope)
+LabelPrefix = "Bridge"
+
+[[Imap]]
+Address = "imap.aol.com:993"
+Username = "old1@aol.com"
+Password = "app-password-1"
+  [Imap.Folders]
+  INBOX = ["INBOX"]
+  Bulk = ["SPAM"]           # check the real junk folder name with your provider
+  # Rollout: keep source copies until the bridge is verified. The folders must
+  # exist. Remove this section to expunge after import.
+  [Imap.ArchiveFolders]
+  INBOX = "Bridged"
+  Bulk = "Bridged"
+  [Imap.Bridge]
+  Alias = "a1"
+  DisplayTag = "AOL1"
+  SendAs = "Your Name <old1@aol.com>"
+  # GmailLabel = "Label_123"
+  # MessageIDDomain = "aol.com"
+  [Imap.Bridge.Smtp]
+  Address = "smtp.aol.com:465"
+  Security = "tls"          # "tls" (465) or "starttls" (587)
+  # Username/Password default to the Imap credentials.
+
+[[Imap]]
+Address = "imap.aol.com:993"
+Username = "old2@aol.com"
+Password = "app-password-2"
+  [Imap.Folders]
+  INBOX = ["INBOX"]
+  Bulk = ["SPAM"]
+  [Imap.ArchiveFolders]
+  INBOX = "Bridged"
+  Bulk = "Bridged"
+  [Imap.Bridge]
+  Alias = "a2"
+  DisplayTag = "AOL2"
+  SendAs = "Your Name <old2@aol.com>"
+  [Imap.Bridge.Smtp]
+  Address = "smtp.aol.com:465"
+  Security = "tls"

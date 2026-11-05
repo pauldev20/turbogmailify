@@ -1,12 +1,15 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/pauldev20/turbogmailbridge/internal/mocks"
+	"github.com/pelletier/go-toml/v2"
 )
 
 func createTestSession(c *configImap) *session {
@@ -1163,5 +1166,22 @@ func TestIdleFolderSelectIsLast(t *testing.T) {
 	got := mailboxes[len(mailboxes)-1]
 	if got != config.IdleFolder {
 		t.Fatalf("last mailbox = %s; want %s", got, config.IdleFolder)
+	}
+}
+
+func TestExampleConfigParses(t *testing.T) {
+	b, err := os.ReadFile("turbogmailbridge.example.toml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &tomlConfig{}
+	if err := toml.Unmarshal(b, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Bridge == nil || cfg.Bridge.PollInterval.Duration != 3*time.Second || !*cfg.Bridge.DryRun {
+		t.Fatalf("Bridge = %+v", cfg.Bridge)
+	}
+	if len(cfg.Imap) != 2 || cfg.Imap[1].Bridge == nil || cfg.Imap[1].Bridge.Smtp.Address != "smtp.aol.com:465" {
+		t.Fatalf("Imap = %+v", cfg.Imap)
 	}
 }
