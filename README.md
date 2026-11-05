@@ -1,377 +1,133 @@
-# Turbogmailify
+<a id="readme-top"></a>
+<div align="center">
+  <h1>Turbogmailbridge</h1>
+  <p>Read and answer your old IMAP/SMTP mailboxes from Gmail: a self-hosted importer with a two-way reply bridge. 📬</p>
+  <p>
+    <a href="https://github.com/pauldev20/turbogmailify/actions/workflows/go-test.yml"><img src="https://img.shields.io/github/actions/workflow/status/pauldev20/turbogmailify/go-test.yml?branch=main&style=flat-square&label=tests" alt="Tests" /></a>
+    <a href="https://github.com/pauldev20/turbogmailify/actions/workflows/docker-publish.yml"><img src="https://img.shields.io/github/actions/workflow/status/pauldev20/turbogmailify/docker-publish.yml?branch=main&style=flat-square&label=image" alt="Container image" /></a>
+    <a href="https://github.com/pauldev20/turbogmailify/pkgs/container/turbogmailify"><img src="https://img.shields.io/badge/ghcr.io-pauldev20%2Fturbogmailify-2496ED?style=flat-square&logo=docker&logoColor=white" alt="GHCR image" /></a>
+    <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.27-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go 1.27" /></a>
+    <a href="./LICENSE"><img src="https://img.shields.io/github/license/pauldev20/turbogmailify?style=flat-square" alt="License" /></a>
+  </p>
+  <p>
+    <a href="#-about">About</a>
+    ·
+    <a href="#-features">Features</a>
+    ·
+    <a href="#-getting-started">Getting Started</a>
+    ·
+    <a href="#-configuration">Configuration</a>
+    ·
+    <a href="#-how-the-bridge-works">How It Works</a>
+    ·
+    <a href="#-docker">Docker</a>
+  </p>
+</div>
+<br />
 
-Turbogmailify is a self-hosted replacement for Gmail's built-in POP3 importer, which was sunset in January 2026. It collects emails from IMAP servers and imports them using Google's official [Gmail API](https://developers.google.com/workspace/gmail/api/guides). In addition to still being available, Turbogmailify is also much faster and more flexible compared to Google's former POP importer.
-
-### Features and Limitations
-
-✅ Speed: Turbogmailify polls your IMAP inbox every few minutes, as opposed to Google's POP importer, which was notorious for taking up to an hour between refreshes. On many IMAP servers, Turbogmailify can take advantage of the IDLE command to achieve instantaneous detection of new emails.
-
-✅ Flexibility: You can configure Turbogmailify to check multiple IMAP accounts and apply custom labels to the emails it imports.
-
-✅ Reliability: The final import step, expunging the original message from the IMAP inbox, is executed by Turbogmailify if and only if the message has been successfully imported into Gmail. Turbogmailify checks the Junk folder, too, so you won't lose any important messages that have been marked false positives.
-
-⚒️ Classification: Gmail's label classification and custom filter features seem to work only sporadically on imported emails.\* Consider using your IMAP inbox's filters, if available, as a reliable alternative.
-
-⚒️ Spam Filtering: Gmail's spam classifier seems to treat imported messages as a separate case and may require considerable re-training to classify spam effectively. By default, Turbogmailify applies the Spam label to emails imported from your IMAP Junk folder, so it can piggyback on the spam filter equipped by your IMAP inbox.
-
-*\* According to [one](https://github.com/YoRyan/turbogmailify/pull/47) report, "Has the words" and "To" filters work, but not filters on "From."*
-
-### FAQ
-
-#### Why not just forward email to my Gmail inbox?
-
-If you just forward your emails over the email network, Google has a nasty habit of silently dropping messages that look like spam, including false positives. Such "spam" will also count against your domain's trustworthiness score, making it all the more difficult for subsequent messages to get through. The end result is a spiral of unreliable delivery that your important messages will never be able to escape from.
-
-#### What about paid services? [Gomailify](https://www.gomailify.com/)? [Postdirect](https://postdirect.net/mailbox)?
-
-Paying somebody to provide this service for you is certainly easier than deploying a solution like Turbogmailify. But if you have the skills to run self-hosted software, why not cut out the middleman? This is your private email we're talking about, after all—some of your most sensitive personal communications.
-
-If running cost is a concern, you needn't necessarily pay for a VPS just to run Turbogmailify. Your IMAP inbox is already doing the heavy lifting of maintaining multiple 9's of availability to receive email, so a forwarder like Turbogmailify just needs be available *most* of the time. A home server with a residential Internet connection will do just fine.
-
-#### What about other self-hosted solutions? [Fetch2Gmail](https://github.com/threehappypenguins/fetch2gmail)? [InboxBridge](https://github.com/tdferreira/inboxbridge)?
-
-Brevity is the soul of wit: Turbogmailify accomplishes everything it needs to do in less than 1000 lines of easily auditable Go [code](main.go) (reputable imports excepted). There are no web UI's, SQL databases, or giant LLM-written commits here. As of July 2026, Turbogmailify also includes key features that Fetch2Gmail does not, such as support for IMAP IDLE, support for checking multiple IMAP folders, and support for Gmail labels.
-
-Turbogmailify's development history dates back to [2024](https://youngryan.com/2024/check-emails-from-gmail-briskly-go-getmail/) and has served as the author's principal way to import email since then. Knock on wood, it has yet to lose a single message.
-
-#### What about IMAP to IMAP syncing? [imapsync](https://imapsync.lamiral.info/)? [Magpie](https://github.com/FynleyMsg/Magpie)?
-
-Turbogmailify is engineered specifically for Gmail and supports Gmail's OAuth flow and labels system. Interacting with a Gmail inbox as if it were just an ordinary IMAP server will always result in some level of friction.
-
-## Usage
-
-### How to Obtain
-
-Official container images are available from Docker Hub (`docker.io/YoRyan/turbogmailify`) and GitHub (`ghcr.io/YoRyan/turbogmailify`). Breaking changes will always result in a major version bump and a new Git branch and registry tag to track updates for that version. The `latest` tag always points to the newest code and makes no guarantees about backwards compatibility. As there is currently only one major version, there is only one other tag: `1`, which contains the exact same code as `latest`.
-
-To build the program yourself, install Go, and then run `go build` in the source repository.
-
-### Google Cloud Setup
-
-The setup process is very similar to that of [gog](https://gogcli.sh/quickstart.html#2-get-an-oauth-client), the Google CLI that has become so fashionable among OpenClaw users.
-
-1. [Create](https://console.cloud.google.com/projectcreate) a project for your Turbogmailify instance in Google Cloud Console.
-2. [Enable](https://console.cloud.google.com/apis/api/gmail.googleapis.com) the Gmail API for this project.
-3. [Configure](https://console.cloud.google.com/auth/branding) your project's OAuth branding. Personal Google accounts can only create "External" projects, but this is okay.
-4. Your project will be initialized in the "Testing" state. You'll have to [add](https://console.cloud.google.com/auth/audience) yourself (or whichever Google account you want to forward mail to) as a test user.
-5. [Publish](https://console.cloud.google.com/auth/audience) your project to change its status to "In Production." This allows your credentials to live longer than 1 week. You do not need to complete the verification process.
-6. [Create](https://console.cloud.google.com/auth/clients) a new client for your project. Choose the "Desktop" type.
-7. Download the JSON secrets file that Google provides for your client.
-
-### Write the Configuration File
-
-Turbogmailify accepts a single configuration file in TOML or JSON format. TOML is recommended for new users, but to preserve backwards compatibility with the first versions of the program, JSON remains the default format. You can opt into the TOML format by passing the `-toml` argument.
-
-It's handy to keep a TOML-to-JSON [converter](https://transform.tools/toml-to-json) or JSON [validator](https://jsonlint.com/) nearby when authoring your configuration file.
-
-#### Imap Section
-
-The `Imap` key specifies a TOML or JSON array of IMAP accounts to connect to and retrieve messages from.
-
-##### Imap.Address
-
-The address of the IMAP server, in `address:port` format. The endpoint used must support implicit TLS. (Most modern IMAP servers have support for this.)
-
-```toml
-[[Imap]] # double brackets for an array of tables
-Address = "imap.purelymail.com:993"
+```mermaid
+flowchart LR
+  A["Old mailbox<br/>(AOL, Yahoo, GMX, ...)"] -- "IMAP IDLE" --> B[turbogmailbridge]
+  B -- "Gmail API import<br/>Reply-To → token address" --> C[Your Gmail inbox]
+  C -- "you hit Reply" --> D["Gmail Sent<br/>(to token address)"]
+  D -- "history poll" --> B
+  B -- "provider's own SMTP<br/>From: old address" --> E[Recipient]
 ```
 
-```json
-{
-  "Imap": [
-    {
-      "Address": "imap.purelymail.com:993"
-    }
-  ]
-}
+## 📖 About
+
+Gmail drops POP fetch in January 2026, and Gmailify plus "Send mail as" for third-party addresses in January 2027. After that, Gmail can neither collect mail from your old accounts nor send as them. Plain forwarding is no fix: Gmail silently drops forwarded mail that looks like spam, and providers like AOL and Yahoo publish `DMARC p=reject`, so mail claiming to be from them must leave through their own SMTP servers.
+
+Turbogmailbridge is a fork of [turbogmailify](https://github.com/YoRyan/turbogmailify) by Ryan Young. It keeps every turbogmailify feature (fast IMAP → Gmail import through the official Gmail API) and adds an optional **two-way bridge**: replies you write in any Gmail client are relayed through the old account's SMTP server, so recipients see your old address and never see Gmail.
+
+It is built for people who self-host and want to retire an old mailbox into Gmail without losing the address. It is not meant for custom domains you control (use proper DNS and a relay there), and it does not sync read state, folders, or deletions back to the source account.
+
+> [!NOTE]
+> Not affiliated with or endorsed by Google. "Gmail" is a trademark of Google LLC.
+
+## ✨ Features
+
+- **Near-instant import** — uses IMAP IDLE where the server supports it and checks every configured folder at least every 5 minutes.
+- **Safe by design** — a message is expunged from the IMAP server only after Gmail confirms the import; optional archive folders keep the source copy instead.
+- **Spam verdicts kept** — mail from the provider's Junk folder gets Gmail's `SPAM` label, and the bridge imports each original unmodified first so Gmail's own classifiers see the real sender.
+- **Multiple accounts, custom labels** — any number of IMAP accounts in one process, with per-folder Gmail label mapping.
+- **Reply from Gmail as your old address** — the bridge rewrites reply addresses to stable token addresses, then relays your replies through each account's own SMTP server.
+- **Leak-checked outbound mail** — headers rebuilt from an allowlist, token addresses and `(via …)` names scrubbed, and a final leak check blocks anything that still mentions Gmail.
+- **Guard rails** — `DryRun` by default, a `MaxSendsPerHour` limit, idempotency records per message, and `Bridge/*` labels plus notifications for anything that could not be relayed.
+- **Small footprint** — one static binary, TOML or JSON config, no web UI, no database server, only outbound connections.
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+| Requirement | Version | Notes |
+|---|---|---|
+| [Go](https://go.dev/dl/) | ≥ 1.27 | Only to build from source |
+| [Docker](https://docs.docker.com/get-docker/) | any recent | Only to run the container image |
+| Google account | — | The Gmail inbox mail is delivered to |
+| Google Cloud project | — | Free; holds your OAuth client (step 1) |
+| App passwords | — | For each IMAP/SMTP account; see [docs/providers.md](./docs/providers.md) |
+
+### 1. Create a Google OAuth client
+
+1. [Create](https://console.cloud.google.com/projectcreate) a project in Google Cloud Console.
+2. [Enable](https://console.cloud.google.com/apis/api/gmail.googleapis.com) the Gmail API for it.
+3. [Configure](https://console.cloud.google.com/auth/branding) the OAuth branding. Personal accounts can only create "External" projects; that is fine.
+4. [Add](https://console.cloud.google.com/auth/audience) the Gmail account you deliver to as a test user.
+5. [Publish](https://console.cloud.google.com/auth/audience) the project to "In Production" so tokens live longer than one week. You do not need verification.
+6. [Create](https://console.cloud.google.com/auth/clients) a client of type **Desktop**.
+7. Download the client's JSON secrets file.
+
+### 2. Build or pull
+
+```bash
+# From source
+git clone https://github.com/pauldev20/turbogmailify.git
+cd turbogmailify
+go build            # produces ./turbogmailbridge
+
+# Or use the container image
+docker pull ghcr.io/pauldev20/turbogmailify:latest
 ```
 
-##### Imap.Username
+### 3. Write the config
 
-##### Imap.Password
-
-The credentials used to authenticate with the IMAP server.
-
-```toml
-[[Imap]]
-Username = "AzureDiamond@example.com"
-Password = "hunter2"
+```bash
+cp turbogmailbridge.example.toml turbogmailbridge.toml   # *.toml is git-ignored
 ```
 
-```json
-{
-  "Imap": [
-    {
-      "Username": "AzureDiamond@example.com",
-      "Password": "hunter2"
-    }
-  ]
-}
+Paste the downloaded secrets JSON into `Secrets`, then fill in your accounts. Leave `DryRun = true` and keep `[Imap.ArchiveFolders]` set for the first run, so nothing is deleted or sent while you check labels and logs. See [Configuration](#-configuration) for every key.
+
+### 4. Authorize with Google
+
+```bash
+# Flags must come before the config file path
+./turbogmailbridge -auth -toml turbogmailbridge.toml
 ```
 
-##### Imap.Folders
+Open the printed URL, approve access, and paste the `http://localhost…` URL your browser fails to load back into the terminal. Copy the printed JSON into the `Tokens` key.
 
-A collection of key-value pairs that maps IMAP folder names to *arrays* of Gmail labels. Specifying a mapping is optional; if this option is not supplied, Turbogmailify uses the INBOX and Junk mapping depicted in this sample.
+> [!IMPORTANT]
+> The requested scope depends on your config: import-only uses `gmail.insert`, the bridge needs `gmail.modify`, and `DeleteOriginal = true` needs full mail access. Run `-auth` again whenever you add the `[Bridge]` section or change `DeleteOriginal`.
 
-Please note that Gmail labels must be specified using their unique identifiers, not their human-readable names. For built-in "system" labels, these values are identical, but "user" labels have randomly generated identifiers. You can obtain these identifiers by running the Google App Script [included](/List%20Gmail%20Labels.js) in this repository against [your account](https://script.google.com/home). 
+### 5. Run
 
-```toml
-[[Imap]]
-# Insert other Imap values here.
-
-# The order of these headings is significant. We are using an inline table.
-[Imap.Folders]
-INBOX = ["INBOX"] # arrays of strings!
-Junk = ["SPAM"]
+```bash
+./turbogmailbridge -toml turbogmailbridge.toml
 ```
 
-```json
-{
-  "Imap": [
-    {
-      "Folders": {
-        "INBOX": [
-          "INBOX"
-        ],
-        "Junk": [
-          "SPAM"
-        ]
-      }
-    }
-  ]
-}
-```
+It runs until stopped. For a permanent setup, use [Docker](#-docker) or the systemd unit below.
 
-##### Imap.FailedFolders
+<details>
+<summary><b>systemd unit</b></summary>
 
-A collection of key-value pairs that maps IMAP folder names to other IMAP folders. Specifying this mapping is optional—but recommended. It instructs Turbogmailify what to do with emails that cannot be successfully uploaded to Gmail.
-
-The Gmail API does not allow every valid email message to be uploaded; it prohibits a few corner cases, such as messages [containing](https://support.google.com/mail/answer/6590) .exe attachments. When the `FailedFolders` mapping is configured and Turbogmailify encounters a prohibited message, the program removes the message from the source folder and moves it into the corresponding "failed" folder. This way, it will not attempt to upload the same message again, and the message will also be available for easy inspection.
-
-The wildcard key `*` specifies a failed folder for any source folders that do not already have explicit mappings.
-
-If `FailedFolders` is not configured, Turbogmailify will use an in-memory store to remember which messages shouldn't be retried. However, in the event of a program restart it will have lost this information and will attempt to upload the messages again, wasting bandwidth and API calls.
-
-```toml
-[[Imap]]
-# Insert other Imap values here.
-
-# The order of these headings is significant. We are using an inline table.
-[Imap.FailedFolders]
-"*" = "Failed" # just a string
-```
-
-```json
-{
-  "Imap": [
-    {
-      "FailedFolders": {
-        "*": "Failed"
-      }
-    }
-  ]
-}
-```
-
-##### Imap.ArchiveFolders
-
-A collection of key-value pairs that maps IMAP folder names to other IMAP folders. Specifying this mapping is optional. It instructs Turbogmailify to move emails into a designated "archive" IMAP folder rather than expunge them from the IMAP server.
-
-The wildcard key `*` specifies an archive folder for any source folders that do not already have explicit mappings.
-
-```toml
-[[Imap]]
-# Insert other Imap values here.
-
-# The order of these headings is significant. We are using an inline table.
-[Imap.ArchiveFolders]
-Junk = "JunkArchive" # just a string
-"*" = "Archive"
-```
-
-```json
-{
-  "Imap": [
-    {
-      "ArchiveFolders": {
-        "Junk": "JunkArchive",
-        "*": "Archive"
-      }
-    }
-  ]
-}
-```
-
-##### Imap.IdleFolder
-
-The IMAP protocol allows a client to use the IDLE command, if it is available, to receive instantaneous notifications of incoming mail for a single folder. The `IdleFolder` option specifies which folder Turbogmailify will watch. This is optional; if omitted, Turbogmailify idles on the INBOX folder by default.
-
-Regardless of these IDLE notifications, Turbogmailify checks all configured folders at least as often as every 5 minutes.
-
-```toml
-[[Imap]]
-IdleFolder = "INBOX"
-```
-
-```json
-{
-  "Imap": [
-    {
-      "IdleFolder": "INBOX"
-    }
-  ]
-}
-```
-
-##### Imap.NeverMarkSpam
-
-A collection of key-value pairs that maps IMAP folder names to booleans. Specifying this mapping is optional. It sets the Gmail "Never Mark Spam" flag for uploaded emails on a per-folder basis.
-
-The wildcard key `*` specifies a boolean value for any source folders that do not already have explicit mappings.
-
-If no mapping is configured, the default mapping is the one depicted in this sample:
-
-```toml
-[[Imap]]
-# Insert other Imap values here.
-
-# The order of these headings is significant. We are using an inline table.
-[Imap.NeverMarkSpam]
-Junk = true # because we expect to add the spam label anyway
-"*" = false # a boolean; no quotes
-```
-
-```json
-{
-  "Imap": [
-    {
-      "NeverMarkSpam": {
-        "Junk": true,
-        "*": false
-      }
-    }
-  ]
-}
-```
-
-##### Imap.ProcessForCalendar
-
-A collection of key-value pairs that maps IMAP folder names to booleans. Specifying this mapping is optional. It sets the Gmail "Process For Calendar" flag for uploaded emails on a per-folder basis.
-
-The wildcard key `*` specifies a boolean value for any source folders that do not already have explicit mappings.
-
-If no mapping is configured, the default mapping is the one depicted in this sample:
-
-```toml
-[[Imap]]
-# Insert other Imap values here.
-
-# The order of these headings is significant. We are using an inline table.
-[Imap.ProcessForCalendar]
-Junk = false # a boolean; no quotes
-"*" = true
-```
-
-```json
-{
-  "Imap": [
-    {
-      "ProcessForCalendar": {
-        "Junk": false,
-        "*": true
-      }
-    }
-  ]
-}
-```
-
-#### Secrets Section
-
-The Secrets key must contain all the JSON data from the `credentials.json` file that Google provides you in step #5 of [#Google Cloud Setup](#google-cloud-setup).
-
-For a TOML configuration file, paste the entire contents of the credentials file as a string:
-
-```toml
-Secrets = '''
-{"installed":{"auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","auth_uri":"https://accounts.google.com/o/oauth2/auth","client_id":"xxx.apps.googleusercontent.com","client_secret":"GOCSPX-xxx","project_id":"turbogmailify","redirect_uris":["http://localhost"],"token_uri":"https://oauth2.googleapis.com/token"}}
-'''
-```
-
-For a JSON configuration file, incorporate the JSON contents of the credentials file as data within the Secrets key:
-
-```json
-{
-  "Secrets": {
-    "installed": {
-      "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-      "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-      "client_id": "xxx.apps.googleusercontent.com",
-      "client_secret": "GOCSPX-xxx",
-      "project_id": "turbogmailify",
-      "redirect_uris": [
-        "http://localhost"
-      ],
-      "token_uri": "https://oauth2.googleapis.com/token"
-    }
-  }
-}
-```
-
-#### Tokens Section
-
-The Tokens key must contain the access and refresh tokens used to authenticate with Google. You obtain these tokens by running Turbogmailify with the `-auth` flag.
-
-Assuming a TOML configuration file (omit `-toml` for a JSON configuration file), in a terminal, run:
-
-```
-$ go build
-# Order is significant; flags must come before the config file path.
-$ ./turbogmailify -auth -toml myconfig.file
-```
-
-(or)
-
-```
-$ docker run -it --rm -v ./myconfig.file:/turbogmailify.conf ghcr.io/yoryan/turbogmailify:1 -auth -toml /turbogmailify.conf
-```
-
-After completing this flow, you'll receive the tokens in the form of JSON data.
-
-For a TOML configuration file, paste the entire JSON contents as a string:
-
-```toml
-Tokens = '''
-{"access_token":"xxx","token_type":"Bearer","refresh_token":"xxx","expiry":"2026-04-04T09:02:00.907727817Z"}
-'''
-```
-
-For a JSON configuration file, incorporate the JSON contents as data within the Tokens key:
-
-```json
-{
-  "Tokens": {
-    "access_token": "xxx",
-    "token_type": "Bearer",
-    "refresh_token": "xxx",
-    "expiry": "2026-04-04T09:02:00.907727817Z"
-  } 
-}
-```
-
-### Regular Operations
-
-With your configuration file fully populated, you can run Turbogmailify without the `-auth` flag, and the program will run indefinitely and start forwarding mail. (If using a TOML configuration file, you must still pass the `-toml` flag.)
-
-A suggested systemd service is as follows:
-
-```
+```ini
 [Unit]
-Description=Turbogmailify IMAP to Gmail
+Description=Turbogmailbridge IMAP/SMTP to Gmail
 
 [Service]
 Type=exec
-ExecStart=/usr/local/bin/turbogmailify -toml /etc/turbogmailify.conf
+ExecStart=/usr/local/bin/turbogmailbridge -toml /etc/turbogmailbridge.toml
 Restart=always
 RestartSec=10s
 
@@ -379,31 +135,242 @@ RestartSec=10s
 WantedBy=multi-user.target
 ```
 
-A suggested Docker Compose service is as follows:
+</details>
+
+## 🔧 Configuration
+
+One config file, TOML or JSON. JSON is the default for compatibility with early turbogmailify versions; pass `-toml` for TOML (recommended). [`turbogmailbridge.example.toml`](./turbogmailbridge.example.toml) is a complete, commented starting point.
+
+### Command-line flags
+
+| Flag | Description |
+|---|---|
+| `-toml` | Parse the config as TOML, with `Secrets` and `Tokens` as strings |
+| `-auth` | Run the Google OAuth flow and print the `Tokens` JSON instead of processing mail |
+| `-healthcheck` | Exit non-zero if the outbound poller has not reached Gmail in `max(5m, 10 × PollInterval)`; requires `[Bridge]` |
+
+### Top-level keys
+
+| Key | Description |
+|---|---|
+| `Secrets` | Contents of the Google client secrets JSON (a string in TOML, an object in JSON) |
+| `Tokens` | Output of `-auth` (a string in TOML, an object in JSON) |
+| `[[Imap]]` | Array of IMAP accounts to import from |
+| `[Bridge]` | Optional. Enables the two-way bridge |
+
+### `[[Imap]]` — per account
+
+| Key | Default | Description |
+|---|---|---|
+| `Address` | — | `host:port`; the server must support implicit TLS (usually `993`) |
+| `Username`, `Password` | — | IMAP credentials, usually an app password |
+| `Folders` | `INBOX → ["INBOX"]`, `Junk → ["SPAM"]` | IMAP folder → array of Gmail label IDs |
+| `FailedFolders` | in-memory | IMAP folder → folder for messages Gmail rejects (e.g. `.exe` attachments). `*` is a wildcard. Recommended, otherwise rejects are retried after a restart |
+| `ArchiveFolders` | expunge | IMAP folder → folder to move imported mail to instead of expunging. `*` is a wildcard. Folders must exist |
+| `IdleFolder` | `INBOX` | Folder watched with IMAP IDLE |
+| `NeverMarkSpam` | `Junk = true`, `* = false` | IMAP folder → Gmail "Never mark spam" flag |
+| `ProcessForCalendar` | `Junk = false`, `* = true` | IMAP folder → Gmail "Process for calendar" flag |
+| `[Imap.Bridge]` | — | Optional. Bridges this account (needs top-level `[Bridge]`) |
+
+> [!TIP]
+> Gmail user labels are referenced by ID (e.g. `Label_123`), not by name. Run [List Gmail Labels.js](./List%20Gmail%20Labels.js) as a [Google Apps Script](https://script.google.com/home) to list them. System labels like `INBOX` and `SPAM` use their names.
+
+### `[Bridge]` — global bridge settings
+
+| Key | Default | Description |
+|---|---|---|
+| `GmailAddress` | — | Your Gmail address, without a `+suffix` |
+| `StateDir` | — | Holds `token.key` and `state.db`. Must be persistent and backed up |
+| `RewriteMode` | `reply-to` | `reply-to` rewrites reply headers only; `full` also rewrites `From` |
+| `PollInterval` | `3s` | How often Gmail's `SENT` history is polled (minimum `1s`) |
+| `MaxSendsPerHour` | `50` | SMTP send attempts per hour across all accounts |
+| `DryRun` | `true` | Label outbound mail `Bridge/DryRun` and never send |
+| `DeleteOriginal` | `false` | Permanently delete originals and stand-ins instead of trashing them (needs full mail scope) |
+| `LabelPrefix` | `Bridge` | Prefix for the bridge's Gmail labels |
+
+### `[Imap.Bridge]` — per bridged account
+
+| Key | Default | Description |
+|---|---|---|
+| `Alias` | — | `[a-z0-9]{1,8}`; appears in token addresses (`you+a1.…@gmail.com`) |
+| `DisplayTag` | — | Shown in names as `Max (via AOL1)` |
+| `SendAs` | — | `From` for relayed mail, e.g. `"Your Name <old@aol.com>"` |
+| `GmailLabel` | — | Optional label ID added to this account's mail (Gmail filters do not run on inserted mail) |
+| `MessageIDDomain` | `SendAs` domain | Domain used in generated `Message-ID`s |
+| `[Imap.Bridge.Smtp]` `Address` | — | SMTP submission server, `host:port` |
+| `[Imap.Bridge.Smtp]` `Security` | — | `tls` (port 465) or `starttls` (port 587) |
+| `[Imap.Bridge.Smtp]` `Username`, `Password` | IMAP credentials | SMTP credentials |
+
+Accounts without `[Imap.Bridge]` keep plain turbogmailify behavior. Starting settings for AOL, Yahoo, GMX, Web.de, iCloud and Fastmail are in [docs/providers.md](./docs/providers.md).
+
+<details>
+<summary><b>Minimal import-only config (TOML and JSON)</b></summary>
+
+```toml
+Secrets = '''
+{"installed":{"client_id":"xxx.apps.googleusercontent.com","client_secret":"GOCSPX-xxx","project_id":"my-project","auth_uri":"https://accounts.google.com/o/oauth2/auth","token_uri":"https://oauth2.googleapis.com/token","redirect_uris":["http://localhost"]}}
+'''
+Tokens = '''
+{"access_token":"xxx","token_type":"Bearer","refresh_token":"xxx","expiry":"2026-01-01T00:00:00Z"}
+'''
+
+[[Imap]]
+Address = "imap.example.com:993"
+Username = "me@example.com"
+Password = "app-password"
+  [Imap.Folders]          # inline tables go after the plain keys
+  INBOX = ["INBOX"]
+  Junk = ["SPAM"]
+  [Imap.FailedFolders]
+  "*" = "Failed"
+```
+
+```json
+{
+  "Secrets": { "installed": { "client_id": "xxx.apps.googleusercontent.com", "client_secret": "GOCSPX-xxx", "...": "..." } },
+  "Tokens": { "access_token": "xxx", "token_type": "Bearer", "refresh_token": "xxx", "expiry": "2026-01-01T00:00:00Z" },
+  "Imap": [
+    {
+      "Address": "imap.example.com:993",
+      "Username": "me@example.com",
+      "Password": "app-password",
+      "Folders": { "INBOX": ["INBOX"], "Junk": ["SPAM"] },
+      "FailedFolders": { "*": "Failed" }
+    }
+  ]
+}
+```
+
+</details>
+
+<div align="right"><a href="#readme-top">↑ back to top</a></div>
+
+## 🧩 How the Bridge Works
+
+**Inbound.** Each message is imported unmodified, so Gmail's spam and category classifiers see the real sender. The bridge then inserts a copy with the same labels and thread in which `Reply-To`, `To`, `Cc`, `Mail-Followup-To`, `Mail-Reply-To`, `List-Unsubscribe` and `List-Post` (and with `RewriteMode = "full"` also `From`) point at token addresses such as `"Max (via AOL1)" <you+a1.k7f3qx2m9p@gmail.com>`, and trashes the original. Original headers are kept as `X-Bridge-Original-*`. Only then is the source copy expunged.
+
+**Outbound.** Replying in any Gmail client (web, apps, IMAP, Gmail SMTP, API) sends to the token address. The bridge polls Gmail's `SENT` history, maps tokens back to real addresses, rebuilds the message from a header allowlist, scrubs token addresses and `(via …)` names, runs a leak check, and submits it through the account's own SMTP server. The relayed copy is filed in Sent and the stand-in is trashed.
+
+**Tokens** are `base32(HMAC-SHA256(key, alias, address))[:10]`: stable per account and correspondent, and unguessable without `StateDir/token.key`. Only messages carrying Gmail's `SENT` label are ever relayed, so strangers mailing a token address cannot trigger a send.
+
+Messages that cannot be relayed safely get one of these labels and a notification:
+
+| Label | Meaning |
+|---|---|
+| `Bridge/DryRun` | `DryRun = true`; the message would have been sent |
+| `Bridge/Blocked` | The leak check or a safety rule stopped it |
+| `Bridge/Mixed` | A recipient was typed as a real address; Gmail delivered it directly |
+| `Bridge/Failed` | SMTP submission failed or its outcome is unknown |
+
+> [!WARNING]
+> Back up `StateDir/token.key`. If it is lost, every reply address in existing mail stops resolving.
+
+### Limitations
+
+- A recipient typed as a real address is delivered by Gmail directly and cannot be intercepted; the bridge only labels it `Bridge/Mixed` afterwards.
+- Gmail Calendar RSVPs and the vacation responder may answer from your Gmail address.
+- Gmail filters do not run on inserted messages. Use `GmailLabel` per account instead. On plain imports, filters work only partly ("Has the words" and "To" reportedly work, "From" does not; [source](https://github.com/YoRyan/turbogmailify/pull/47)).
+- The compose window shows `(via AOL1)` names. Gmail autocomplete learns them, so new mail to such a contact also goes out through that account.
+- Inbound mail takes about a second longer (import, insert, trash).
+- Quoted HTML keeps Gmail's markup (e.g. `class="gmail_quote"`), which hints that Gmail was used.
+- If filing the relayed copy in Sent fails, you are notified but it is not retried; the stand-in stays in Sent.
+- If the connection drops while the SMTP server confirms a message, the bridge cannot tell whether it was sent. It does not retry; it labels the stand-in `Bridge/Failed` and notifies you.
+- Outlook.com and Hotmail require OAuth for IMAP/SMTP, which is not supported.
+
+<div align="right"><a href="#readme-top">↑ back to top</a></div>
+
+## 🐳 Docker
+
+The image is built from [`Containerfile`](./Containerfile) for `linux/amd64` and `linux/arm64` and published to GHCR on every push to `main`. It runs as UID `10001` from a `scratch` base, makes only outbound connections, and keeps bridge state in `/data`.
+
+Authorize once, interactively:
+
+```bash
+docker run -it --rm \
+  -v ./turbogmailbridge.toml:/config/turbogmailbridge.toml:ro \
+  ghcr.io/pauldev20/turbogmailify:latest \
+  -auth -toml /config/turbogmailbridge.toml
+```
+
+Then run it with Compose. This mirrors [compose.example.yaml](./compose.example.yaml):
 
 ```yaml
 services:
-  turbogmailify:
-    image: ghcr.io/yoryan/turbogmailify:1
-    container_name: turbogmailify
+  turbogmailbridge:
+    image: ghcr.io/pauldev20/turbogmailify:latest
     restart: unless-stopped
-    configs:
-      - source: turbogmailify
-        target: /turbogmailify.conf
-    # Not necessary if using a JSON configuration file.
-    command: -toml /turbogmailify.conf
-configs:
-  turbogmailify:
-    content: |
-      Secrets = '''
-      {"installed":{"auth_provider_x509_cert_url":"https://www.googleapis.com/oauth2/v1/certs","auth_uri":"https://accounts.google.com/o/oauth2/auth","client_id":"xxx.apps.googleusercontent.com","client_secret":"GOCSPX-xxx","project_id":"turbogmailify","redirect_uris":["http://localhost"],"token_uri":"https://oauth2.googleapis.com/token"}}
-      '''
-      Tokens = '''
-      {"access_token":"xxx","token_type":"Bearer","refresh_token":"xxx","expiry":"2026-04-04T09:02:00.907727817Z"}
-      '''
+    command: ["-toml", "/config/turbogmailbridge.toml"]
+    volumes:
+      - ./turbogmailbridge.toml:/config/turbogmailbridge.toml:ro
+      - bridge-data:/data          # token.key + state.db; back this up
+    healthcheck:
+      test: ["CMD", "/main", "-healthcheck", "-toml", "/config/turbogmailbridge.toml"]
+      interval: 60s
 
-      [[Imap]]
-      Address = "imap.purelymail.com:993"
-      Username = "AzureDiamond@example.com"
-      Password = "hunter2"
+volumes:
+  bridge-data:
 ```
+
+Set `StateDir = "/data"` in `[Bridge]` so state lands on the volume. Without a `[Bridge]` section, drop the `healthcheck` and the volume.
+
+## ❓ FAQ
+
+<details>
+<summary><b>Why not forward mail to Gmail?</b></summary>
+
+Gmail silently drops forwarded messages that look like spam, including false positives, and those count against the forwarding domain's reputation. Importing through the Gmail API avoids the delivery path entirely.
+
+</details>
+
+<details>
+<summary><b>Why not a paid service such as Gomailify or Postdirect?</b></summary>
+
+Paying is easier. Self-hosting keeps your private mail and provider passwords off third-party servers. A VPS is optional: your IMAP provider already handles availability for receiving, so a home server that is up most of the time is enough.
+
+</details>
+
+<details>
+<summary><b>Why not IMAP-to-IMAP sync (imapsync, Magpie)?</b></summary>
+
+This tool is built for Gmail: it uses Gmail's OAuth flow, labels, import flags and history API. Treating Gmail as a plain IMAP server always causes friction, and IMAP sync cannot send replies as your old address.
+
+</details>
+
+<details>
+<summary><b>Do I need the bridge?</b></summary>
+
+No. Without a `[Bridge]` section the program behaves exactly like upstream turbogmailify and only imports mail.
+
+</details>
+
+## 🔒 Security
+
+The config file holds your Google OAuth tokens and provider passwords: never commit it (`*.toml` and `*.conf` are git-ignored) and mount it read-only. Anyone with the tokens can read and modify your mailbox. See [SECURITY.md](./SECURITY.md) for the threat model and how to report vulnerabilities privately.
+
+## 🤝 Contributing
+
+Issues and pull requests are welcome. Run the tests before opening a PR:
+
+```bash
+go test ./...
+```
+
+The bridge lives in [`internal/bridge`](./internal/bridge).
+
+## 📚 Acknowledgements
+
+- [turbogmailify](https://github.com/YoRyan/turbogmailify) by Ryan Young, the IMAP → Gmail importer this fork builds on ([background post](https://youngryan.com/2024/check-emails-from-gmail-briskly-go-getmail/)).
+- [emersion/go-imap](https://github.com/emersion/go-imap) and [go-message](https://github.com/emersion/go-message) for IMAP and MIME handling.
+- [bbolt](https://github.com/etcd-io/bbolt) for the bridge's state store.
+
+## 📄 License
+
+[MIT](./LICENSE) © 2024–2026 Ryan Young, © 2026 Paul Geeser.
+
+---
+
+<div align="center">
+  <sub>If you like this project, you can buy me a coffee ☕ — it would be greatly appreciated!</sub>
+  <br /><br />
+  <a href="https://www.buymeacoffee.com/pauldev"><img src="https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png" alt="Buy Me A Coffee" height="41" /></a>
+</div>
