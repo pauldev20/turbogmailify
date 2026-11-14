@@ -1,6 +1,9 @@
 package main
 
 import (
+	"bufio"
+	"errors"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -35,7 +38,7 @@ func createTestSession(c *configImap) *session {
 
 	fc := createForwardConfig(c)
 	return &session{
-		client, &fc, mailboxUpdate, 0, fc.createUidMap[struct{}](),
+		client, &fc, mailboxUpdate, 0, fc.createUidMap[struct{}](), accountLogger(c.Username),
 	}
 }
 
@@ -1183,5 +1186,59 @@ func TestExampleConfigParses(t *testing.T) {
 	}
 	if len(cfg.Imap) != 2 || cfg.Imap[1].Bridge == nil || cfg.Imap[1].Bridge.Smtp.Address != "smtp.aol.com:465" {
 		t.Fatalf("Imap = %+v", cfg.Imap)
+	}
+}
+
+// A server that drops the connection during IDLE must end doIdle right away
+// with an error, not after the idle deadline.
+func TestIdleReturnsWhenServerClosesConnection(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		conn.Write([]byte("* OK [CAPABILITY IMAP4rev1 IDLE] ready\r\n"))
+		r := bufio.NewReader(conn)
+		for {
+			line, err := r.ReadString('\n')
+			if err != nil {
+				return
+			}
+			if _, cmd, _ := strings.Cut(strings.TrimSpace(line), " "); strings.EqualFold(cmd, "IDLE") {
+				conn.Write([]byte("+ idling\r\n"))
+				time.Sleep(50 * time.Millisecond)
+				return // drop the connection like AOL does
+			}
+		}
+	}()
+
+	client, err := imapclient.DialInsecure(ln.Addr().String(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	s := &session{
+		client:       client,
+		idleDeadline: time.Minute,
+		log:          accountLogger("test"),
+	}
+	start := time.Now()
+	cooldown, err := s.doIdle()
+	if !errors.Is(err, errIdleConnectionClosed) {
+		t.Fatalf("doIdle() err = %v; want errIdleConnectionClosed", err)
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("doIdle() took %s; want it to return soon after the server closed", elapsed)
+	}
+	if cooldown != minIdleBeforeReconnect {
+		t.Fatalf("cooldown = %s; want %s for a connection dropped right away", cooldown, minIdleBeforeReconnect)
 	}
 }

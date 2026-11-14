@@ -30,7 +30,12 @@ import (
 const (
 	maxPollTime      = 5 * time.Minute
 	networkRetryTime = maxPollTime
+	// Minimum time in IDLE before a server-side disconnect triggers an
+	// immediate reconnect; shorter sessions wait this long first.
+	minIdleBeforeReconnect = 30 * time.Second
 )
+
+var errIdleConnectionClosed = errors.New("IMAP server closed the connection during IDLE")
 
 func main() {
 	ctx := context.Background()
@@ -422,6 +427,13 @@ type session struct {
 	mailboxUpdate    <-chan *imapclient.UnilateralDataMailbox
 	idleDeadline     time.Duration
 	importFailedUids map[string]map[imap.UID]struct{}
+	log              *log.Logger // prefixes every line with the IMAP account
+}
+
+// Logger that prefixes each message with the IMAP account, so logs from
+// several accounts can be told apart.
+func accountLogger(username string) *log.Logger {
+	return log.New(log.Writer(), "["+username+"] ", log.Flags()|log.Lmsgprefix)
 }
 
 func connectSession(c *configImap, f *forwardConfig, importFailedUids map[string]map[imap.UID]struct{}) (*session, error) {
@@ -437,10 +449,12 @@ func connectSession(c *configImap, f *forwardConfig, importFailedUids map[string
 			}}
 	)
 
+	logger := accountLogger(c.Username)
+
 	// Open the connection.
 	client, err := imapclient.DialTLS(c.Address, &imapclient.Options{UnilateralDataHandler: dataHandler})
 	if err != nil {
-		log.Println("Error connecting to IMAP server:", err)
+		logger.Println("Error connecting to IMAP server:", err)
 		return nil, err
 	}
 
@@ -449,12 +463,13 @@ func connectSession(c *configImap, f *forwardConfig, importFailedUids map[string
 		Login(c.Username, c.Password).
 		Wait(); err != nil {
 
-		log.Println("LOGIN error:", err)
+		logger.Println("LOGIN error:", err)
 		client.Close()
 		return nil, err
 	}
 
-	return &session{client, f, mailboxUpdate, maxPollTime, importFailedUids}, nil
+	logger.Println("Connected to IMAP server")
+	return &session{client, f, mailboxUpdate, maxPollTime, importFailedUids, logger}, nil
 }
 
 // Make a new connection to the IMAP server and retrieve and process messages.
@@ -470,7 +485,7 @@ func (s *session) forwardAndIdle(gm gmailInbox) (cooldown time.Duration, err err
 			Select(folder, nil).
 			Wait()
 		if err != nil {
-			log.Println("SELECT error:", err)
+			s.log.Println("SELECT error:", err)
 			return networkRetryTime, err
 		}
 
@@ -493,12 +508,12 @@ func (s *session) forwardAndIdle(gm gmailInbox) (cooldown time.Duration, err err
 			}
 
 			sum := messageSummary(envelope)
-			log.Printf(
-				"Importing message received by %s (folder %s, size %s, subject %s)",
-				fc.id, folder, sum.size, sum.subject)
+			s.log.Printf(
+				"Importing message (folder %s, size %s, subject %s)",
+				folder, sum.size, sum.subject)
 
 			if err := gm.DoImport(envelope, fc.folderToNeverMarkSpam[folder], fc.folderToProcessForCalendar[folder], labels...); err != nil {
-				log.Printf("Error importing message: %v", err)
+				s.log.Printf("Error importing message: %v", err)
 				if isImportRetryable(err) {
 					// Leave it alone; try again next cycle.
 				} else {
@@ -576,7 +591,7 @@ func (s *session) fetchMessage(seq uint32) (uid imap.UID, data []byte, err error
 
 	messages, err := fetch.Collect()
 	if err != nil {
-		log.Println("FETCH error:", err)
+		s.log.Println("FETCH error:", err)
 		return
 	}
 
@@ -695,7 +710,7 @@ func (s *session) moveMessage(uid imap.UID, mailbox string) error {
 		Move(imap.UIDSetNum(uid), mailbox).
 		Wait(); err != nil {
 
-		log.Println("MOVE error:", err)
+		s.log.Println("MOVE error:", err)
 		return err
 	}
 
@@ -715,7 +730,7 @@ func (s *session) deleteMessage(uid imap.UID) error {
 		Store(setNum, addDeleted, nil).
 		Close(); err != nil {
 
-		log.Println("STORE error:", err)
+		s.log.Println("STORE error:", err)
 		return err
 	}
 
@@ -723,7 +738,7 @@ func (s *session) deleteMessage(uid imap.UID) error {
 		Expunge().
 		Close(); err != nil {
 
-		log.Println("EXPUNGE error:", err)
+		s.log.Println("EXPUNGE error:", err)
 		return err
 	}
 
@@ -740,23 +755,36 @@ func (s *session) doIdle() (cooldown time.Duration, err error) {
 		return s.idleDeadline, nil
 	}
 
+	start := time.Now()
 	timer := time.NewTimer(s.idleDeadline)
 	select {
 	case <-s.mailboxUpdate:
 		timer.Stop()
 	case <-timer.C:
+	case <-s.client.Closed():
+		// Some servers (e.g. AOL) drop idle connections well before the
+		// deadline. Reconnect right away instead of sitting on a dead
+		// connection until the timer fires, which would delay new mail.
+		timer.Stop()
+		idled := time.Since(start).Round(time.Second)
+		s.log.Printf("Server closed the connection after %s in IDLE; reconnecting", idled)
+		if idled < minIdleBeforeReconnect {
+			// Avoid hammering a server that drops us right away.
+			cooldown = minIdleBeforeReconnect
+		}
+		return cooldown, errIdleConnectionClosed
 	}
 
 	// Any errors past this point should have occurred after idling or waiting,
 	// so no need for a cooldown.
 
 	if err = idle.Close(); err != nil {
-		log.Println("IDLE Close error:", err)
+		s.log.Println("IDLE Close error:", err)
 		return
 	}
 
 	if err = idle.Wait(); err != nil {
-		log.Println("IDLE Wait error:", err)
+		s.log.Println("IDLE Wait error:", err)
 		return
 	}
 
