@@ -30,6 +30,9 @@ import (
 const (
 	maxPollTime      = 5 * time.Minute
 	networkRetryTime = maxPollTime
+	// How long to stay in IDLE before renewing it. AOL and Yahoo drop
+	// connections that idle for about 5 minutes, so renew well before that.
+	idleRenewTime = 4 * time.Minute
 	// Minimum time in IDLE before a server-side disconnect triggers an
 	// immediate reconnect; shorter sessions wait this long first.
 	minIdleBeforeReconnect = 30 * time.Second
@@ -272,6 +275,14 @@ func doHealthcheckAndExit(c *config) {
 func doForwardingForImap(c *configImap, in gmailInbox) {
 	forwardConfig := createForwardConfig(c)
 	importFailedUids := forwardConfig.createUidMap[struct{}]()
+
+	// IDLE only covers the selected folder, so watch every other folder on
+	// its own connection and wake the main session when mail arrives there.
+	wake := make(chan struct{}, 1)
+	for _, folder := range forwardConfig.folderOrderIdleLast[:len(forwardConfig.folderOrderIdleLast)-1] {
+		go watchFolder(c, folder, wake)
+	}
+
 	for {
 		func() {
 			s, err := connectSession(c, &forwardConfig, importFailedUids)
@@ -280,6 +291,7 @@ func doForwardingForImap(c *configImap, in gmailInbox) {
 				return
 			}
 			defer s.close()
+			s.wake = wake
 
 			for {
 				cooldown, err := s.forwardAndIdle(in)
@@ -427,7 +439,8 @@ type session struct {
 	mailboxUpdate    <-chan *imapclient.UnilateralDataMailbox
 	idleDeadline     time.Duration
 	importFailedUids map[string]map[imap.UID]struct{}
-	log              *log.Logger // prefixes every line with the IMAP account
+	log              *log.Logger     // prefixes every line with the IMAP account
+	wake             <-chan struct{} // signalled when a watched folder gets mail
 }
 
 // Logger that prefixes each message with the IMAP account, so logs from
@@ -450,15 +463,23 @@ func connectSession(c *configImap, f *forwardConfig, importFailedUids map[string
 	)
 
 	logger := accountLogger(c.Username)
+	client, err := dialAndLogin(c, dataHandler, logger)
+	if err != nil {
+		return nil, err
+	}
 
-	// Open the connection.
-	client, err := imapclient.DialTLS(c.Address, &imapclient.Options{UnilateralDataHandler: dataHandler})
+	logger.Println("Connected to IMAP server")
+	return &session{client, f, mailboxUpdate, idleRenewTime, importFailedUids, logger, nil}, nil
+}
+
+// Open a TLS connection to the IMAP server and log in.
+func dialAndLogin(c *configImap, handler *imapclient.UnilateralDataHandler, logger *log.Logger) (*imapclient.Client, error) {
+	client, err := imapclient.DialTLS(c.Address, &imapclient.Options{UnilateralDataHandler: handler})
 	if err != nil {
 		logger.Println("Error connecting to IMAP server:", err)
 		return nil, err
 	}
 
-	// Provide credentials.
 	if err := client.
 		Login(c.Username, c.Password).
 		Wait(); err != nil {
@@ -467,9 +488,83 @@ func connectSession(c *configImap, f *forwardConfig, importFailedUids map[string
 		client.Close()
 		return nil, err
 	}
+	return client, nil
+}
 
-	logger.Println("Connected to IMAP server")
-	return &session{client, f, mailboxUpdate, maxPollTime, importFailedUids, logger}, nil
+// Watch a folder that is not the IDLE folder and signal wake whenever new
+// mail arrives in it. The folder is opened read-only; the main session does
+// all processing.
+func watchFolder(c *configImap, folder string, wake chan<- struct{}) {
+	logger := accountLogger(c.Username)
+	dial := func(handler *imapclient.UnilateralDataHandler) (*imapclient.Client, error) {
+		return dialAndLogin(c, handler, logger)
+	}
+	for {
+		cooldown, _ := watchFolderOnce(dial, folder, wake, idleRenewTime, logger)
+		time.Sleep(cooldown)
+	}
+}
+
+// One connection's worth of watchFolder. Returns how long to wait before
+// reconnecting.
+func watchFolderOnce(
+	dial func(*imapclient.UnilateralDataHandler) (*imapclient.Client, error),
+	folder string, wake chan<- struct{}, renew time.Duration, logger *log.Logger,
+) (cooldown time.Duration, err error) {
+	signal := func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+	client, err := dial(&imapclient.UnilateralDataHandler{
+		Mailbox: func(data *imapclient.UnilateralDataMailbox) {
+			if data.NumMessages != nil {
+				signal()
+			}
+		},
+	})
+	if err != nil {
+		return networkRetryTime, err
+	}
+	defer client.Close()
+
+	if _, err = client.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
+		logger.Printf("Watching %s: SELECT error: %v", folder, err)
+		return networkRetryTime, err
+	}
+	// Mail may have arrived while we were not connected.
+	signal()
+
+	for {
+		start := time.Now()
+		idle, err := client.Idle()
+		if err != nil {
+			logger.Printf("Watching %s: IDLE error: %v", folder, err)
+			return networkRetryTime, err
+		}
+
+		timer := time.NewTimer(renew)
+		select {
+		case <-timer.C:
+		case <-client.Closed():
+			timer.Stop()
+			idled := time.Since(start).Round(time.Second)
+			logger.Printf("Watching %s: server closed the connection after %s in IDLE; reconnecting", folder, idled)
+			if idled < minIdleBeforeReconnect {
+				cooldown = minIdleBeforeReconnect
+			}
+			return cooldown, errIdleConnectionClosed
+		}
+
+		if err = idle.Close(); err == nil {
+			err = idle.Wait()
+		}
+		if err != nil {
+			logger.Printf("Watching %s: IDLE renew error: %v", folder, err)
+			return 0, err
+		}
+	}
 }
 
 // Make a new connection to the IMAP server and retrieve and process messages.
@@ -759,6 +854,8 @@ func (s *session) doIdle() (cooldown time.Duration, err error) {
 	timer := time.NewTimer(s.idleDeadline)
 	select {
 	case <-s.mailboxUpdate:
+		timer.Stop()
+	case <-s.wake:
 		timer.Stop()
 	case <-timer.C:
 	case <-s.client.Closed():

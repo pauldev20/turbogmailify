@@ -47,7 +47,7 @@ It is built for people who self-host and want to retire an old mailbox into Gmai
 
 ## ✨ Features
 
-- **Near-instant import** — uses IMAP IDLE where the server supports it and checks every configured folder at least every 5 minutes.
+- **Near-instant import** — uses IMAP IDLE on every configured folder (one extra read-only connection per folder besides `IdleFolder`), renews it every 4 minutes to stay under short server timeouts such as AOL's, and checks every folder at least that often.
 - **Safe by design** — a message is expunged from the IMAP server only after Gmail confirms the import; optional archive folders keep the source copy instead.
 - **Spam verdicts kept** — mail from the provider's Junk folder gets Gmail's `SPAM` label, and the bridge imports each original unmodified first so Gmail's own classifiers see the real sender.
 - **Multiple accounts, custom labels** — any number of IMAP accounts in one process, with per-folder Gmail label mapping.
@@ -167,7 +167,7 @@ One config file, TOML or JSON. JSON is the default for compatibility with early 
 | `Folders` | `INBOX → ["INBOX"]`, `Junk → ["SPAM"]` | IMAP folder → array of Gmail label IDs |
 | `FailedFolders` | in-memory | IMAP folder → folder for messages Gmail rejects (e.g. `.exe` attachments). `*` is a wildcard. Recommended, otherwise rejects are retried after a restart |
 | `ArchiveFolders` | expunge | IMAP folder → folder to move imported mail to instead of expunging. `*` is a wildcard. Folders must exist |
-| `IdleFolder` | `INBOX` | Folder watched with IMAP IDLE |
+| `IdleFolder` | `INBOX` | Folder IDLEd on by the main connection. Other folders are watched on their own read-only connections |
 | `NeverMarkSpam` | `Junk = true`, `* = false` | IMAP folder → Gmail "Never mark spam" flag |
 | `ProcessForCalendar` | `Junk = false`, `* = true` | IMAP folder → Gmail "Process for calendar" flag |
 | `[Imap.Bridge]` | — | Optional. Bridges this account (needs top-level `[Bridge]`) |

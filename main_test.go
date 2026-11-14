@@ -38,7 +38,7 @@ func createTestSession(c *configImap) *session {
 
 	fc := createForwardConfig(c)
 	return &session{
-		client, &fc, mailboxUpdate, 0, fc.createUidMap[struct{}](), accountLogger(c.Username),
+		client, &fc, mailboxUpdate, 0, fc.createUidMap[struct{}](), accountLogger(c.Username), nil,
 	}
 }
 
@@ -1241,4 +1241,142 @@ func TestIdleReturnsWhenServerClosesConnection(t *testing.T) {
 	if cooldown != minIdleBeforeReconnect {
 		t.Fatalf("cooldown = %s; want %s for a connection dropped right away", cooldown, minIdleBeforeReconnect)
 	}
+}
+
+// fakeIdleServer is a minimal scripted IMAP server for IDLE tests. It accepts
+// LOGIN, SELECT/EXAMINE and IDLE/DONE, and counts IDLE commands.
+type fakeIdleServer struct {
+	ln      net.Listener
+	idles   chan struct{} // receives one value per IDLE command
+	onIdle  func(conn net.Conn)
+	dropped chan struct{}
+}
+
+func newFakeIdleServer(t *testing.T, onIdle func(conn net.Conn)) *fakeIdleServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	s := &fakeIdleServer{ln: ln, idles: make(chan struct{}, 16), onIdle: onIdle}
+	go s.serve()
+	return s
+}
+
+func (s *fakeIdleServer) serve() {
+	conn, err := s.ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+	conn.Write([]byte("* OK [CAPABILITY IMAP4rev1 IDLE] ready\r\n"))
+	r := bufio.NewReader(conn)
+	var idleTag string
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimSpace(line)
+		if strings.EqualFold(line, "DONE") {
+			conn.Write([]byte(idleTag + " OK IDLE done\r\n"))
+			continue
+		}
+		tag, rest, _ := strings.Cut(line, " ")
+		cmd, _, _ := strings.Cut(rest, " ")
+		switch strings.ToUpper(cmd) {
+		case "LOGIN":
+			conn.Write([]byte(tag + " OK logged in\r\n"))
+		case "SELECT", "EXAMINE":
+			conn.Write([]byte("* 0 EXISTS\r\n" + tag + " OK [READ-ONLY] done\r\n"))
+		case "IDLE":
+			idleTag = tag
+			conn.Write([]byte("+ idling\r\n"))
+			s.idles <- struct{}{}
+			if s.onIdle != nil {
+				s.onIdle(conn)
+			}
+		case "LOGOUT":
+			conn.Write([]byte("* BYE\r\n" + tag + " OK bye\r\n"))
+			return
+		default:
+			conn.Write([]byte(tag + " BAD unknown\r\n"))
+		}
+	}
+}
+
+func (s *fakeIdleServer) dial(handler *imapclient.UnilateralDataHandler) (*imapclient.Client, error) {
+	client, err := imapclient.DialInsecure(s.ln.Addr().String(), &imapclient.Options{UnilateralDataHandler: handler})
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Login("user", "pass").Wait(); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func waitFor(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
+// A signal from a folder watcher must end the main session's IDLE early.
+func TestIdleReturnsOnWake(t *testing.T) {
+	srv := newFakeIdleServer(t, nil)
+	client, err := srv.dial(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	wake := make(chan struct{}, 1)
+	s := &session{client: client, idleDeadline: time.Minute, log: accountLogger("test"), wake: wake}
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.doIdle()
+		done <- err
+	}()
+	waitFor(t, srv.idles, "IDLE")
+	wake <- struct{}{}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("doIdle() err = %v; want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("doIdle() did not return after wake")
+	}
+}
+
+// New mail in a watched folder must signal wake.
+func TestWatchFolderSignalsOnNewMail(t *testing.T) {
+	srv := newFakeIdleServer(t, func(conn net.Conn) {
+		time.Sleep(50 * time.Millisecond)
+		conn.Write([]byte("* 1 EXISTS\r\n"))
+	})
+	wake := make(chan struct{}, 1)
+	go watchFolderOnce(srv.dial, "Bulk", wake, time.Minute, accountLogger("test"))
+
+	// The first signal is sent on connect, to catch mail that arrived while
+	// disconnected; consume it before waiting for the EXISTS one.
+	waitFor(t, wake, "initial wake")
+	waitFor(t, srv.idles, "IDLE")
+	waitFor(t, wake, "wake on EXISTS")
+}
+
+// The watcher must renew IDLE on the same connection before the renew time.
+func TestWatchFolderRenewsIdle(t *testing.T) {
+	srv := newFakeIdleServer(t, nil)
+	wake := make(chan struct{}, 1)
+	go watchFolderOnce(srv.dial, "Bulk", wake, 100*time.Millisecond, accountLogger("test"))
+
+	waitFor(t, srv.idles, "first IDLE")
+	waitFor(t, srv.idles, "renewed IDLE")
 }
