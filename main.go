@@ -36,9 +36,38 @@ const (
 	// Minimum time in IDLE before a server-side disconnect triggers an
 	// immediate reconnect; shorter sessions wait this long first.
 	minIdleBeforeReconnect = 30 * time.Second
+	// AOL and Yahoo end every IMAP session about 60 minutes after login: the
+	// next command gets "unexpected EOF" or "NO [AUTHENTICATIONFAILED]".
+	// Reconnect before that happens.
+	maxSessionAge = 50 * time.Minute
+	// A connection that worked at least this long before failing most likely
+	// hit a server-side limit, so reconnect right away. One that fails sooner
+	// may be a lasting problem, so wait networkRetryTime first.
+	stableConnectionTime = time.Minute
 )
 
-var errIdleConnectionClosed = errors.New("IMAP server closed the connection during IDLE")
+var (
+	errIdleConnectionClosed = errors.New("IMAP server closed the connection during IDLE")
+	errSessionExpired       = errors.New("IMAP session reached its maximum age")
+)
+
+// How long to wait before reconnecting after a connection made at connected
+// fails. A zero time means unknown and always waits.
+func reconnectDelay(connected time.Time) time.Duration {
+	if !connected.IsZero() && time.Since(connected) >= stableConnectionTime {
+		return 0
+	}
+	return networkRetryTime
+}
+
+// How long to IDLE before renewing: renew, or less if the connection
+// reaches maxAge sooner.
+func idleTimeout(renew time.Duration, connected time.Time, maxAge time.Duration) time.Duration {
+	if connected.IsZero() {
+		return renew
+	}
+	return max(0, min(renew, time.Until(connected.Add(maxAge))))
+}
 
 func main() {
 	ctx := context.Background()
@@ -441,6 +470,7 @@ type session struct {
 	importFailedUids map[string]map[imap.UID]struct{}
 	log              *log.Logger     // prefixes every line with the IMAP account
 	wake             <-chan struct{} // signalled when a watched folder gets mail
+	connected        time.Time       // when the session logged in; zero if unknown
 }
 
 // Logger that prefixes each message with the IMAP account, so logs from
@@ -469,7 +499,7 @@ func connectSession(c *configImap, f *forwardConfig, importFailedUids map[string
 	}
 
 	logger.Println("Connected to IMAP server")
-	return &session{client, f, mailboxUpdate, idleRenewTime, importFailedUids, logger, nil}, nil
+	return &session{client, f, mailboxUpdate, idleRenewTime, importFailedUids, logger, nil, time.Now()}, nil
 }
 
 // Open a TLS connection to the IMAP server and log in.
@@ -500,7 +530,7 @@ func watchFolder(c *configImap, folder string, wake chan<- struct{}) {
 		return dialAndLogin(c, handler, logger)
 	}
 	for {
-		cooldown, _ := watchFolderOnce(dial, folder, wake, idleRenewTime, logger)
+		cooldown, _ := watchFolderOnce(dial, folder, wake, idleRenewTime, maxSessionAge, logger)
 		time.Sleep(cooldown)
 	}
 }
@@ -509,7 +539,7 @@ func watchFolder(c *configImap, folder string, wake chan<- struct{}) {
 // reconnecting.
 func watchFolderOnce(
 	dial func(*imapclient.UnilateralDataHandler) (*imapclient.Client, error),
-	folder string, wake chan<- struct{}, renew time.Duration, logger *log.Logger,
+	folder string, wake chan<- struct{}, renew, maxAge time.Duration, logger *log.Logger,
 ) (cooldown time.Duration, err error) {
 	signal := func() {
 		select {
@@ -528,10 +558,11 @@ func watchFolderOnce(
 		return networkRetryTime, err
 	}
 	defer client.Close()
+	connected := time.Now()
 
 	if _, err = client.Select(folder, &imap.SelectOptions{ReadOnly: true}).Wait(); err != nil {
 		logger.Printf("Watching %s: SELECT error: %v", folder, err)
-		return networkRetryTime, err
+		return reconnectDelay(connected), err
 	}
 	// Mail may have arrived while we were not connected.
 	signal()
@@ -541,10 +572,10 @@ func watchFolderOnce(
 		idle, err := client.Idle()
 		if err != nil {
 			logger.Printf("Watching %s: IDLE error: %v", folder, err)
-			return networkRetryTime, err
+			return reconnectDelay(connected), err
 		}
 
-		timer := time.NewTimer(renew)
+		timer := time.NewTimer(idleTimeout(renew, connected, maxAge))
 		select {
 		case <-timer.C:
 		case <-client.Closed():
@@ -562,7 +593,13 @@ func watchFolderOnce(
 		}
 		if err != nil {
 			logger.Printf("Watching %s: IDLE renew error: %v", folder, err)
-			return 0, err
+			return reconnectDelay(connected), err
+		}
+
+		if time.Since(connected) >= maxAge {
+			// Start a fresh session before the server ends this one.
+			client.Logout().Wait()
+			return 0, nil
 		}
 	}
 }
@@ -581,7 +618,7 @@ func (s *session) forwardAndIdle(gm gmailInbox) (cooldown time.Duration, err err
 			Wait()
 		if err != nil {
 			s.log.Println("SELECT error:", err)
-			return networkRetryTime, err
+			return reconnectDelay(s.connected), err
 		}
 
 		// Finish all imports as a single step before moving or expunging any
@@ -594,7 +631,7 @@ func (s *session) forwardAndIdle(gm gmailInbox) (cooldown time.Duration, err err
 		for i := range inbox.NumMessages {
 			uid, envelope, err := s.fetchMessage(i + 1)
 			if err != nil {
-				return networkRetryTime, err
+				return reconnectDelay(s.connected), err
 			}
 
 			if _, failed := s.importFailedUids[folder][uid]; failed {
@@ -631,14 +668,14 @@ func (s *session) forwardAndIdle(gm gmailInbox) (cooldown time.Duration, err err
 			// Move to the configured archive folder.
 			for _, uid := range successUids {
 				if err := s.moveMessage(uid, dest); err != nil {
-					return networkRetryTime, err
+					return reconnectDelay(s.connected), err
 				}
 			}
 		} else {
 			// Expunge
 			for _, uid := range successUids {
 				if err := s.deleteMessage(uid); err != nil {
-					return networkRetryTime, err
+					return reconnectDelay(s.connected), err
 				}
 			}
 		}
@@ -647,7 +684,7 @@ func (s *session) forwardAndIdle(gm gmailInbox) (cooldown time.Duration, err err
 			// Move to the configured failed folder.
 			for _, uid := range failUids {
 				if err := s.moveMessage(uid, failFolder); err != nil {
-					return networkRetryTime, err
+					return reconnectDelay(s.connected), err
 				}
 			}
 		} else {
@@ -843,6 +880,10 @@ func (s *session) deleteMessage(uid imap.UID) error {
 // Block until the next mailbox status update, or until the deadline has
 // elapsed.
 func (s *session) doIdle() (cooldown time.Duration, err error) {
+	if s.expired() {
+		return 0, s.refresh()
+	}
+
 	idle, err := s.client.Idle()
 	if err != nil {
 		// Probably means the server doesn't support IDLE. Nobody needs to know
@@ -851,7 +892,7 @@ func (s *session) doIdle() (cooldown time.Duration, err error) {
 	}
 
 	start := time.Now()
-	timer := time.NewTimer(s.idleDeadline)
+	timer := time.NewTimer(idleTimeout(s.idleDeadline, s.connected, maxSessionAge))
 	select {
 	case <-s.mailboxUpdate:
 		timer.Stop()
@@ -885,5 +926,21 @@ func (s *session) doIdle() (cooldown time.Duration, err error) {
 		return
 	}
 
+	if s.expired() {
+		return 0, s.refresh()
+	}
 	return
+}
+
+// Whether the session is old enough that the server may end it soon.
+func (s *session) expired() bool {
+	return !s.connected.IsZero() && time.Since(s.connected) >= maxSessionAge
+}
+
+// Log out so the caller reconnects with a fresh session.
+func (s *session) refresh() error {
+	s.log.Printf("Reconnecting after %s; AOL ends IMAP sessions after about an hour",
+		time.Since(s.connected).Round(time.Minute))
+	s.client.Logout().Wait()
+	return errSessionExpired
 }

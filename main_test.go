@@ -38,7 +38,7 @@ func createTestSession(c *configImap) *session {
 
 	fc := createForwardConfig(c)
 	return &session{
-		client, &fc, mailboxUpdate, 0, fc.createUidMap[struct{}](), accountLogger(c.Username), nil,
+		client, &fc, mailboxUpdate, 0, fc.createUidMap[struct{}](), accountLogger(c.Username), nil, time.Time{},
 	}
 }
 
@@ -1362,7 +1362,7 @@ func TestWatchFolderSignalsOnNewMail(t *testing.T) {
 		conn.Write([]byte("* 1 EXISTS\r\n"))
 	})
 	wake := make(chan struct{}, 1)
-	go watchFolderOnce(srv.dial, "Bulk", wake, time.Minute, accountLogger("test"))
+	go watchFolderOnce(srv.dial, "Bulk", wake, time.Minute, time.Hour, accountLogger("test"))
 
 	// The first signal is sent on connect, to catch mail that arrived while
 	// disconnected; consume it before waiting for the EXISTS one.
@@ -1375,8 +1375,79 @@ func TestWatchFolderSignalsOnNewMail(t *testing.T) {
 func TestWatchFolderRenewsIdle(t *testing.T) {
 	srv := newFakeIdleServer(t, nil)
 	wake := make(chan struct{}, 1)
-	go watchFolderOnce(srv.dial, "Bulk", wake, 100*time.Millisecond, accountLogger("test"))
+	go watchFolderOnce(srv.dial, "Bulk", wake, 100*time.Millisecond, time.Hour, accountLogger("test"))
 
 	waitFor(t, srv.idles, "first IDLE")
 	waitFor(t, srv.idles, "renewed IDLE")
+}
+
+// The watcher must log out and return before the connection reaches its
+// maximum age, without waiting for the full renew time.
+func TestWatchFolderRefreshesBeforeMaxAge(t *testing.T) {
+	srv := newFakeIdleServer(t, nil)
+	wake := make(chan struct{}, 1)
+	type result struct {
+		cooldown time.Duration
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		cooldown, err := watchFolderOnce(srv.dial, "Bulk", wake, time.Minute, 200*time.Millisecond, accountLogger("test"))
+		done <- result{cooldown, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil || r.cooldown != 0 {
+			t.Fatalf("watchFolderOnce() = %s, %v; want 0, nil", r.cooldown, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("watchFolderOnce() did not refresh the connection")
+	}
+}
+
+// The main session must end IDLE and ask for an immediate reconnect once it
+// reaches maxSessionAge.
+func TestIdleRefreshesOldSession(t *testing.T) {
+	srv := newFakeIdleServer(t, nil)
+	client, err := srv.dial(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	s := &session{
+		client:       client,
+		idleDeadline: time.Minute,
+		log:          accountLogger("test"),
+		connected:    time.Now().Add(-maxSessionAge + 200*time.Millisecond),
+	}
+	type result struct {
+		cooldown time.Duration
+		err      error
+	}
+	done := make(chan result, 1)
+	go func() {
+		cooldown, err := s.doIdle()
+		done <- result{cooldown, err}
+	}()
+	select {
+	case r := <-done:
+		if !errors.Is(r.err, errSessionExpired) || r.cooldown != 0 {
+			t.Fatalf("doIdle() = %s, %v; want 0, errSessionExpired", r.cooldown, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("doIdle() did not refresh the session")
+	}
+}
+
+func TestReconnectDelay(t *testing.T) {
+	if d := reconnectDelay(time.Time{}); d != networkRetryTime {
+		t.Errorf("unknown connect time: %s; want %s", d, networkRetryTime)
+	}
+	if d := reconnectDelay(time.Now()); d != networkRetryTime {
+		t.Errorf("fresh connection: %s; want %s", d, networkRetryTime)
+	}
+	if d := reconnectDelay(time.Now().Add(-time.Hour)); d != 0 {
+		t.Errorf("hour-old connection: %s; want 0", d)
+	}
 }

@@ -47,7 +47,7 @@ It is built for people who self-host and want to retire an old mailbox into Gmai
 
 ## ✨ Features
 
-- **Near-instant import** — uses IMAP IDLE on every configured folder (one extra read-only connection per folder besides `IdleFolder`), renews it every 4 minutes to stay under short server timeouts such as AOL's, and checks every folder at least that often.
+- **Near-instant import** — uses IMAP IDLE on every configured folder (one extra read-only connection per folder besides `IdleFolder`), renews it every 4 minutes to stay under short server timeouts such as AOL's, reconnects every 50 minutes before AOL's one-hour session limit, and checks every folder at least that often.
 - **Safe by design** — a message is expunged from the IMAP server only after Gmail confirms the import; optional archive folders keep the source copy instead.
 - **Spam verdicts kept** — mail from the provider's Junk folder gets Gmail's `SPAM` label, and the bridge imports each original unmodified first so Gmail's own classifiers see the real sender.
 - **Multiple accounts, custom labels** — any number of IMAP accounts in one process, with per-folder Gmail label mapping.
