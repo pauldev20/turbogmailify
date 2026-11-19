@@ -22,6 +22,9 @@ type Config struct {
 	DryRun          *bool // outbound: label and log, never send; default true
 	DeleteOriginal  bool  // permanently delete originals and stand-ins instead of trashing them
 	LabelPrefix     string
+
+	// BackfillInterval is the minimum time between backfilled messages.
+	BackfillInterval Duration
 }
 
 // Account is the per-account [Imap.Bridge] section.
@@ -31,6 +34,7 @@ type Account struct {
 	SendAs          string // From address for relayed mail, e.g. "Name <old@aol.com>"
 	GmailLabel      string // optional label id added to this account's mail
 	MessageIDDomain string // optional; defaults to the SendAs domain
+	BackfillQuery   string // optional Gmail search; matching mail is rewritten once at startup
 	Smtp            Smtp
 }
 
@@ -76,6 +80,9 @@ func (c *Config) setDefaults() {
 	if c.LabelPrefix == "" {
 		c.LabelPrefix = "Bridge"
 	}
+	if c.BackfillInterval.Duration == 0 {
+		c.BackfillInterval.Duration = defaultBackfillInterval
+	}
 }
 
 func (c *Config) validate() error {
@@ -94,6 +101,9 @@ func (c *Config) validate() error {
 	}
 	if c.PollInterval.Duration < time.Second {
 		return errors.New("PollInterval must be at least 1s")
+	}
+	if c.BackfillInterval.Duration < 0 {
+		return errors.New("BackfillInterval must not be negative")
 	}
 	if c.MaxSendsPerHour < 0 {
 		return errors.New("MaxSendsPerHour must not be negative")

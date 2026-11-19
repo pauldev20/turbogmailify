@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"net/mail"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/googleapi"
@@ -29,7 +31,14 @@ type FakeGmail struct {
 	ImportLabels   []string // extra labels Gmail "assigns" on import, e.g. SPAM
 	ImportNoLabels bool     // Import response omits labelIds
 	InsertErr      error
+	InsertErrs     []error // returned one per call before InsertErr; nil succeeds
+	InsertLost     []error // like InsertErrs, but the message is stored anyway
+	IndexLag       bool    // messages stored by InsertLost stay out of Search until Reindex
+	unindexed      map[string]bool
+	GetErrs        []error // returned one per call before succeeding
 	TrashErr       error
+	DeleteErr      error
+	SearchErr      error
 	LabelsErr      error
 
 	Events        []*gmail.History
@@ -71,6 +80,25 @@ func (f *FakeGmail) Import(raw []byte, labels []string, _, _ bool) (*gmail.Messa
 
 func (f *FakeGmail) Insert(raw []byte, labels []string, threadID string) (*gmail.Message, error) {
 	f.Calls = append(f.Calls, "insert")
+	if len(f.InsertLost) > 0 {
+		err := f.InsertLost[0]
+		f.InsertLost = f.InsertLost[1:]
+		id := f.Add(raw, labels, threadID)
+		if f.IndexLag {
+			if f.unindexed == nil {
+				f.unindexed = map[string]bool{}
+			}
+			f.unindexed[id] = true
+		}
+		return nil, err
+	}
+	if len(f.InsertErrs) > 0 {
+		err := f.InsertErrs[0]
+		f.InsertErrs = f.InsertErrs[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if f.InsertErr != nil {
 		return nil, f.InsertErr
 	}
@@ -78,6 +106,11 @@ func (f *FakeGmail) Insert(raw []byte, labels []string, threadID string) (*gmail
 }
 
 func (f *FakeGmail) Get(id string) (*gmail.Message, error) {
+	if len(f.GetErrs) > 0 {
+		err := f.GetErrs[0]
+		f.GetErrs = f.GetErrs[1:]
+		return nil, err
+	}
 	m, ok := f.Messages[id]
 	if !ok || m.Deleted {
 		return nil, &googleapi.Error{Code: 404}
@@ -110,21 +143,33 @@ func (f *FakeGmail) Trash(id string) error {
 
 func (f *FakeGmail) Delete(id string) error {
 	f.Calls = append(f.Calls, "delete:"+id)
+	if f.DeleteErr != nil {
+		return f.DeleteErr
+	}
 	f.Messages[id].Deleted = true
 	return nil
 }
 
-// Search supports "rfc822msgid:<id>"; any other query returns every SENT
-// message that is not trashed.
+// Search supports "rfc822msgid:<id>" and "label:<id>" (other terms are
+// ignored), the latter newest first by Date header like Gmail; any other query returns every SENT message
+// that is not trashed.
 func (f *FakeGmail) Search(q string) ([]string, error) {
+	if f.SearchErr != nil {
+		return nil, f.SearchErr
+	}
+	for _, term := range strings.Fields(q) {
+		if label, ok := strings.CutPrefix(term, "label:"); ok {
+			return f.searchLabel(label), nil // other terms are ignored
+		}
+	}
 	var ids []string
 	for id, m := range f.Messages {
-		if m.Trashed || m.Deleted {
+		if m.Trashed || m.Deleted || f.unindexed[id] {
 			continue
 		}
 		if want, ok := strings.CutPrefix(q, "rfc822msgid:"); ok {
 			if msg, err := mail.ReadMessage(bytes.NewReader(m.Raw)); err == nil &&
-				strings.Trim(msg.Header.Get("Message-ID"), "<>") == want {
+				msgID(msg.Header.Get("Message-ID")) == want {
 				ids = append(ids, id)
 			}
 		} else if slices.Contains(m.Labels, "SENT") {
@@ -133,6 +178,43 @@ func (f *FakeGmail) Search(q string) ([]string, error) {
 	}
 	slices.Sort(ids)
 	return ids, nil
+}
+
+// Reindex makes every stored message searchable.
+func (f *FakeGmail) Reindex() { f.unindexed = nil }
+
+// msgID returns the id inside the angle brackets of a Message-ID value, as
+// Gmail indexes it.
+func msgID(v string) string {
+	if _, rest, ok := strings.Cut(v, "<"); ok {
+		v, _, _ = strings.Cut(rest, ">")
+	}
+	return strings.TrimSpace(v)
+}
+
+func (f *FakeGmail) searchLabel(label string) []string {
+	var ids []string
+	for id, m := range f.Messages {
+		if !m.Trashed && !m.Deleted && slices.Contains(m.Labels, label) {
+			ids = append(ids, id)
+		}
+	}
+	date := func(id string) time.Time {
+		msg, err := mail.ReadMessage(bytes.NewReader(f.Messages[id].Raw))
+		if err != nil {
+			return time.Time{}
+		}
+		d, _ := msg.Header.Date()
+		return d
+	}
+	num := func(id string) int { n, _ := strconv.Atoi(strings.TrimPrefix(id, "m")); return n }
+	slices.SortFunc(ids, func(a, b string) int {
+		if c := date(b).Compare(date(a)); c != 0 {
+			return c
+		}
+		return num(b) - num(a)
+	})
+	return ids
 }
 
 func (f *FakeGmail) History(startID uint64, _ string) (*gmail.ListHistoryResponse, error) {

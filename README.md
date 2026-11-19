@@ -187,6 +187,7 @@ One config file, TOML or JSON. JSON is the default for compatibility with early 
 | `DryRun` | `true` | Label outbound mail `Bridge/DryRun` and never send |
 | `DeleteOriginal` | `false` | Permanently delete originals and stand-ins instead of trashing them (needs full mail scope) |
 | `LabelPrefix` | `Bridge` | Prefix for the bridge's Gmail labels |
+| `BackfillInterval` | `1.5s` | Minimum time between messages rewritten by `BackfillQuery` |
 
 ### `[Imap.Bridge]` — per bridged account
 
@@ -197,6 +198,7 @@ One config file, TOML or JSON. JSON is the default for compatibility with early 
 | `SendAs` | — | `From` for relayed mail, e.g. `"Your Name <old@aol.com>"` |
 | `GmailLabel` | — | Optional label ID added to this account's mail (Gmail filters do not run on inserted mail) |
 | `MessageIDDomain` | `SendAs` domain | Domain used in generated `Message-ID`s |
+| `BackfillQuery` | — | Optional Gmail search, e.g. `label:old@aol.com after:2018/01/01`. Matching mail already in Gmail is rewritten once at startup; see [Backfilling existing mail](#backfilling-existing-mail) |
 | `[Imap.Bridge.Smtp]` `Address` | — | SMTP submission server, `host:port` |
 | `[Imap.Bridge.Smtp]` `Security` | — | `tls` (port 465) or `starttls` (port 587) |
 | `[Imap.Bridge.Smtp]` `Username`, `Password` | IMAP credentials | SMTP credentials |
@@ -261,6 +263,30 @@ Messages that cannot be relayed safely get one of these labels and a notificatio
 | `Bridge/Blocked` | The leak check or a safety rule stopped it |
 | `Bridge/Mixed` | A recipient was typed as a real address; Gmail delivered it directly |
 | `Bridge/Failed` | SMTP submission failed or its outcome is unknown |
+
+### Backfilling existing mail
+
+Mail that reached Gmail without the bridge, e.g. before it was set up, still carries real addresses, so replying to it sends from Gmail. Set `BackfillQuery` on an account to rewrite it in place:
+
+```toml
+  [Imap.Bridge]
+  Alias = "a1"
+  # ...
+  BackfillQuery = "label:old@aol.com after:2018/01/01"
+```
+
+At startup, in the running bridge, every match is processed newest first, one account after another: the raw mail is rewritten like inbound mail, inserted with all of the original's labels (including `SENT` and `UNREAD`) in the same thread, recorded so the relay ignores it, and only then is the original trashed (or deleted with `DeleteOriginal`). The copy carries `X-Bridge-Backfill-Of: <alias>/<original Gmail id>`, plus a generated `Message-ID` (`backfill.<alias>.<id>@bridge.invalid`) if the original had none, so an interrupted run recognises it.
+
+- **Your own sent mail** (`From` is the account's address) gets only `To` and `Cc` rewritten. `From` and `Reply-To` stay, so replying to your own message goes to its recipients through the bridge instead of back to you. Gmail only treats the message as yours if the account's address is a [Send mail as](https://support.google.com/mail/answer/22370) address in Gmail; otherwise replies go to that address directly.
+- **Skipped:** messages the bridge already wrote (`X-Bridge-Original-From`), messages it already handled (imported, relayed, or backfilled), drafts, and mail addressed to token addresses.
+- **Malformed** messages that cannot be rewritten (including mail without `From`) are left untouched and listed in the summary.
+- **Stop and resume any time.** A restart skips what is done. An original whose copy may already exist, after a crash or an insert that failed with a server error, is matched to that copy on the next start instead of being copied again, even if it no longer matches the query. Failed messages are listed in the summary and retried on the next start; once a run completes without failures it is not repeated. Change the query to run again. Prefer absolute dates (`after:2018/01/01`) over relative ones (`newer_than:7d`), which shift between restarts.
+- **Stops instead of duplicating.** If an original cannot be trashed or deleted (for example `DeleteOriginal = true` without the full mail scope), the run stops after that message and notifies you, rather than leaving every mail twice. Fix the cause and restart.
+- **`DryRun = true`** only logs what would change per message (old and new address headers, labels) and modifies nothing, including the state db.
+- **Rate.** One message per `BackfillInterval` (default `1.5s`, 40 a minute). Gmail allows 6,000 quota units per user and minute and each message costs 105, so the default leaves room for the relay and imports; projects on Gmail's older, higher quotas can lower it. Rate limits (`429`, rate-limit `403`), `5xx` and network errors are retried with backoff. An insert is never simply repeated: after any error the bridge waits for Gmail's search index and looks for a copy Gmail may have stored anyway; after a `5xx` or network error it never inserts that message again in the same run. Progress with counts and an ETA is logged every 30 seconds, and a summary is logged and sent as a notification at the end.
+
+> [!TIP]
+> Start with `DryRun = true` and a narrow query such as `label:old@aol.com newer_than:7d`, check the log, then widen it.
 
 > [!WARNING]
 > Back up `StateDir/token.key`. If it is lost, every reply address in existing mail stops resolving.

@@ -287,6 +287,7 @@ func startBridge(ctx context.Context, c *config, gmService *gmail.Service, gmInb
 		log.Fatalln("Bridge:", err)
 	}
 	go br.Run(ctx)
+	go br.Backfill(ctx)
 	return br
 }
 

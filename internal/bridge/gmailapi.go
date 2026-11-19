@@ -76,7 +76,8 @@ func (g GmailAPI) Delete(id string) error {
 
 func (g GmailAPI) Search(query string) ([]string, error) {
 	var ids []string
-	err := g.S.Users.Messages.List("me").Q(query).Pages(context.Background(), func(r *gmail.ListMessagesResponse) error {
+	// Gmail lists newest first, which the backfill relies on.
+	err := g.S.Users.Messages.List("me").Q(query).MaxResults(500).Pages(context.Background(), func(r *gmail.ListMessagesResponse) error {
 		for _, m := range r.Messages {
 			ids = append(ids, m.Id)
 		}

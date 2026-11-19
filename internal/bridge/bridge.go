@@ -38,6 +38,7 @@ type Bridge struct {
 	store    *Store
 	tokens   *Tokens
 	accounts map[string]*account // by alias
+	aliases  []string            // config order
 
 	textToken *regexp.Regexp   // token address inside body text
 	viaNames  []*regexp.Regexp // " (via <tag>)" for every account
@@ -46,6 +47,11 @@ type Bridge struct {
 	labelIDs    map[string]string // label suffix -> Gmail label id
 	retryDelays []time.Duration   // SMTP backoff on transient errors
 	now         func() time.Time
+
+	apiRetryDelays   []time.Duration // backfill: Gmail backoff on 429/5xx
+	backfillInterval time.Duration   // backfill: minimum time between messages
+	backfillNext     time.Time       // backfill: earliest start of the next message
+	backfillSettle   time.Duration   // backfill: wait before looking for a copy after a failed insert
 }
 
 // Label suffixes under Config.LabelPrefix.
@@ -78,6 +84,10 @@ func New(cfg Config, accounts []Account, api API, sender Sender, notify func(sub
 		accounts:    make(map[string]*account, len(accounts)),
 		retryDelays: []time.Duration{5 * time.Second, 30 * time.Second, 2 * time.Minute},
 		now:         time.Now,
+
+		apiRetryDelays:   defaultAPIRetryDelays,
+		backfillInterval: cfg.BackfillInterval.Duration,
+		backfillSettle:   30 * time.Second,
 	}
 	for _, a := range accounts {
 		if err := a.validate(); err != nil {
@@ -87,6 +97,7 @@ func New(cfg Config, accounts []Account, api API, sender Sender, notify func(sub
 			return nil, fmt.Errorf("duplicate Alias %q", a.Alias)
 		}
 		self, _ := mail.ParseAddress(a.SendAs) // checked by validate
+		b.aliases = append(b.aliases, a.Alias)
 		b.accounts[a.Alias] = &account{Account: a, self: self, via: " (via " + a.DisplayTag + ")"}
 		b.viaNames = append(b.viaNames, regexp.MustCompile(viaSpace+`*\(via`+viaSpace+`+`+regexp.QuoteMeta(a.DisplayTag)+`\)`))
 	}
@@ -131,15 +142,10 @@ func (b *Bridge) Inbox(alias string, next Importer) (*Inbox, error) {
 // tokenize returns the token address for a correspondent of acct and records
 // it. The account's own address maps to the self token.
 func (b *Bridge) tokenize(acct *account, a *mail.Address) (*mail.Address, error) {
-	name := a.Name
-	if name == "" {
-		name = a.Address
+	t, tok := b.tokenAddress(acct, a)
+	if tok == selfToken {
+		return t, nil
 	}
-	if strings.EqualFold(a.Address, acct.self.Address) {
-		return &mail.Address{Name: name + acct.via, Address: b.tokens.Address(acct.Alias, selfToken)}, nil
-	}
-
-	tok := b.tokens.Token(acct.Alias, a.Address)
 	now := b.now()
 	err := b.store.PutToken(TokenRecord{
 		Alias: acct.Alias, Token: tok, Address: a.Address, Name: a.Name, FirstSeen: now, LastSeen: now,
@@ -147,7 +153,21 @@ func (b *Bridge) tokenize(acct *account, a *mail.Address) (*mail.Address, error)
 	if err != nil {
 		return nil, err
 	}
-	return &mail.Address{Name: name + acct.via, Address: b.tokens.Address(acct.Alias, tok)}, nil
+	return t, nil
+}
+
+// tokenAddress returns the token address for a correspondent of acct and the
+// token itself, without recording it.
+func (b *Bridge) tokenAddress(acct *account, a *mail.Address) (*mail.Address, string) {
+	name := a.Name
+	if name == "" {
+		name = a.Address
+	}
+	tok := selfToken
+	if !strings.EqualFold(a.Address, acct.self.Address) {
+		tok = b.tokens.Token(acct.Alias, a.Address)
+	}
+	return &mail.Address{Name: name + acct.via, Address: b.tokens.Address(acct.Alias, tok)}, tok
 }
 
 // resolve maps a token back to the real address of acct's correspondent.

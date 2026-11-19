@@ -18,6 +18,7 @@ var (
 	bucketMsgIDs   = []byte("msgids")   // stand-in Message-ID -> relayed Message-ID
 	bucketMeta     = []byte("meta")
 	keyHistoryID   = []byte("historyId")
+	backfillPrefix = "backfill\x00" // meta key prefix: + alias + "\x00" + query
 
 	ErrTokenCollision = errors.New("token collision")
 )
@@ -40,11 +41,21 @@ const (
 	stateSending = "sending"
 	stateSent    = "sent"
 	stateFailed  = "failed"
+
+	// stateUnrouted marks SENT mail the relay saw without token recipients.
+	// Unlike stateIgnored it is not bridge mail, so the backfill still
+	// rewrites it.
+	stateUnrouted = "unrouted"
+	// stateBackfilling marks an original whose rewritten copy may already be
+	// inserted; MessageID holds the copy's Gmail id once it is known. The
+	// backfill finishes it before inserting another copy.
+	stateBackfilling = "backfilling"
 )
 
 type OutboundRecord struct {
 	State     string
-	MessageID string // Message-ID of the relayed mail
+	MessageID string // Message-ID of the relayed mail; Gmail id of the copy for stateBackfilling
+	Alias     string `json:",omitempty"` // stateBackfilling only
 	At        time.Time
 }
 
@@ -130,6 +141,47 @@ func (s *Store) SetHistoryID(id uint64) error {
 	})
 }
 
+// BackfillDone reports when the backfill for alias and query completed, or
+// the zero time.
+func (s *Store) BackfillDone(alias, query string) (at time.Time, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket(bucketMeta).Get(backfillKey(alias, query)); v != nil {
+			return at.UnmarshalText(v)
+		}
+		return nil
+	})
+	return
+}
+
+func (s *Store) SetBackfillDone(alias, query string, at time.Time) error {
+	v, err := at.MarshalText()
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketMeta).Put(backfillKey(alias, query), v)
+	})
+}
+
+// PendingBackfills returns the Gmail ids of alias's originals left in
+// stateBackfilling.
+func (s *Store) PendingBackfills(alias string) (ids []string, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketOutbound).ForEach(func(k, v []byte) error {
+			var r OutboundRecord
+			if json.Unmarshal(v, &r) == nil && r.State == stateBackfilling && r.Alias == alias {
+				ids = append(ids, string(k))
+			}
+			return nil
+		})
+	})
+	return
+}
+
+func backfillKey(alias, query string) []byte {
+	return []byte(backfillPrefix + alias + "\x00" + query)
+}
+
 func (s *Store) Outbound(msgID string) (r OutboundRecord, ok bool, err error) {
 	err = s.db.View(func(tx *bolt.Tx) error {
 		v := tx.Bucket(bucketOutbound).Get([]byte(msgID))
@@ -149,6 +201,47 @@ func (s *Store) SetOutbound(msgID string, r OutboundRecord) error {
 	}
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(bucketOutbound).Put([]byte(msgID), v)
+	})
+}
+
+// ClaimBackfill marks original msgID as being backfilled by alias, unless
+// something else recorded it since the backfill looked: only a missing,
+// stateUnrouted, or alias's own stateBackfilling record may be replaced.
+func (s *Store) ClaimBackfill(msgID, alias string, at time.Time) (ok bool, err error) {
+	v, err := json.Marshal(OutboundRecord{State: stateBackfilling, Alias: alias, At: at})
+	if err != nil {
+		return false, err
+	}
+	err = s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketOutbound)
+		if old := b.Get([]byte(msgID)); old != nil {
+			var r OutboundRecord
+			if err := json.Unmarshal(old, &r); err != nil {
+				return err
+			}
+			if r.State != stateUnrouted && (r.State != stateBackfilling || r.Alias != alias) {
+				return nil
+			}
+		}
+		ok = true
+		return b.Put([]byte(msgID), v)
+	})
+	return
+}
+
+// AddOutbound stores r unless msgID already has a record, so a concurrent
+// backfill's stateBackfilling is never overwritten.
+func (s *Store) AddOutbound(msgID string, r OutboundRecord) error {
+	v, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketOutbound)
+		if b.Get([]byte(msgID)) != nil {
+			return nil
+		}
+		return b.Put([]byte(msgID), v)
 	})
 }
 

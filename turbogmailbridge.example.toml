@@ -20,6 +20,7 @@ MaxSendsPerHour = 50
 DryRun = true               # outbound: label Bridge/DryRun, never send
 DeleteOriginal = false      # true = permanent delete (needs full mail scope)
 LabelPrefix = "Bridge"
+BackfillInterval = "1.5s"   # pacing for Imap.Bridge.BackfillQuery
 
 [[Imap]]
 Address = "imap.aol.com:993"
@@ -39,6 +40,8 @@ Password = "app-password-1"
   SendAs = "Your Name <old1@aol.com>"
   # GmailLabel = "Label_123"
   # MessageIDDomain = "aol.com"
+  # Rewrite mail already in Gmail once at startup (newest first):
+  # BackfillQuery = "label:old1@aol.com after:2018/01/01"
   [Imap.Bridge.Smtp]
   Address = "smtp.aol.com:465"
   Security = "tls"          # "tls" (465) or "starttls" (587)

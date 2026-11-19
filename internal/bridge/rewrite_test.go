@@ -53,6 +53,7 @@ Subject: Hello
 Message-ID: <abc@example.com>
 In-Reply-To: <prev@example.com>
 X-Bridge-Original-From: spoofed@evil.com
+X-Bridge-Backfill-Of: a1/m1
 
 Body line 1
 Body line 2
@@ -74,6 +75,9 @@ func TestRewriteReplyToMode(t *testing.T) {
 	}
 	if got := h.Get(xOriginal + "From"); got != "Max Mustermann <max@example.com>" {
 		t.Errorf("spoofed original header survived: %q", got)
+	}
+	if h.Has(backfillOf) {
+		t.Error("a spoofed backfill marker must be removed")
 	}
 	if got := h.Get(xOriginal + "To"); got != "Paul <old1@aol.com>, carl@example.com" {
 		t.Errorf("original To = %q", got)

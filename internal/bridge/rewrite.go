@@ -27,6 +27,12 @@ var preservedHeaders = []string{"From", "Reply-To", "To", "Cc", "Mail-Followup-T
 // tokenizer maps a real address to its token address.
 type tokenizer func(*mail.Address) (*mail.Address, error)
 
+// rewriteSent is an internal mode for mail the account itself sent: only To
+// and Cc are rewritten. Replying to your own message addresses its
+// recipients, so From and Reply-To stay as they are and the reply does not
+// come back to you.
+const rewriteSent = "sent"
+
 // rewrite returns raw with its reply paths and recipients replaced by token
 // addresses. All other header fields and the body are kept byte for byte.
 func rewrite(raw []byte, mode string, tokenize tokenizer) ([]byte, error) {
@@ -41,10 +47,18 @@ func rewrite(raw []byte, mode string, tokenize tokenizer) ([]byte, error) {
 	for _, k := range preservedHeaders {
 		h.Del(xOriginal + k)
 	}
+	h.Del(backfillOf)
 	for _, k := range preservedHeaders {
 		if v := h.Get(k); v != "" {
 			h.Set(xOriginal+k, v)
 		}
+	}
+
+	if mode == rewriteSent {
+		if err := tokenizeHeaders(h, []string{"To", "Cc"}, tokenize); err != nil {
+			return nil, err
+		}
+		return writeMessage(h, br)
 	}
 
 	// Every reply must reach a token address, so an unusable reply path is
@@ -66,19 +80,9 @@ func rewrite(raw []byte, mode string, tokenize tokenizer) ([]byte, error) {
 	if mode == RewriteFull {
 		keys = append(keys, "From")
 	}
-	for _, k := range keys {
-		addrs, err := h.AddressList(k)
-		if err != nil {
-			// Unparseable recipients would leak via reply-all; drop them.
-			h.Del(k)
-			continue
-		}
-		if addrs, err = tokenizeAll(addrs, tokenize); err != nil {
-			return nil, err
-		}
-		h.SetAddressList(k, addrs)
+	if err := tokenizeHeaders(h, keys, tokenize); err != nil {
+		return nil, err
 	}
-
 	// Gmail's unsubscribe button and clients' reply-to-list use these.
 	for _, k := range []string{"List-Unsubscribe", "List-Post"} {
 		v := h.Get(k)
@@ -94,12 +98,32 @@ func rewrite(raw []byte, mode string, tokenize tokenizer) ([]byte, error) {
 			h.Set(k, v)
 		}
 	}
+	return writeMessage(h, br)
+}
 
+// tokenizeHeaders replaces every address in the address-list headers keys.
+func tokenizeHeaders(h mail.Header, keys []string, tokenize tokenizer) error {
+	for _, k := range keys {
+		addrs, err := h.AddressList(k)
+		if err != nil {
+			// Unparseable recipients would leak via reply-all; drop them.
+			h.Del(k)
+			continue
+		}
+		if addrs, err = tokenizeAll(addrs, tokenize); err != nil {
+			return err
+		}
+		h.SetAddressList(k, addrs)
+	}
+	return nil
+}
+
+func writeMessage(h mail.Header, body io.Reader) ([]byte, error) {
 	var out bytes.Buffer
 	if err := textproto.WriteHeader(&out, h.Header.Header); err != nil {
 		return nil, err
 	}
-	if _, err := io.Copy(&out, br); err != nil {
+	if _, err := io.Copy(&out, body); err != nil {
 		return nil, err
 	}
 	return out.Bytes(), nil

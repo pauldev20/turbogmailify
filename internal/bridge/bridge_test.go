@@ -38,6 +38,7 @@ type testEnv struct {
 	gm     *mocks.FakeGmail
 	sender *fakeSender
 	notes  []string // notification subjects
+	bodies []string // notification bodies
 }
 
 func testAccounts() []Account {
@@ -56,13 +57,17 @@ func newTestEnv(t *testing.T, edit func(*Config)) *testEnv {
 		edit(&cfg)
 	}
 	env := &testEnv{gm: mocks.NewFakeGmail(), sender: &fakeSender{}}
-	b, err := New(cfg, testAccounts(), env.gm, env.sender, func(subject, _ string) {
+	b, err := New(cfg, testAccounts(), env.gm, env.sender, func(subject, body string) {
 		env.notes = append(env.notes, subject)
+		env.bodies = append(env.bodies, body)
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	b.retryDelays = []time.Duration{0, 0}
+	b.apiRetryDelays = []time.Duration{0, 0}
+	b.backfillInterval = 0
+	b.backfillSettle = 0
 	t.Cleanup(func() { b.Close() })
 	env.b = b
 	return env
@@ -113,6 +118,7 @@ func TestNewValidates(t *testing.T) {
 		"bad send as":   func(_ *Config, a []Account) []Account { a[0].SendAs = "x"; return a },
 		"bad security":  func(_ *Config, a []Account) []Account { a[0].Smtp.Security = "none"; return a },
 		"no smtp creds": func(_ *Config, a []Account) []Account { a[0].Smtp.Password = ""; return a },
+		"neg backfill":  func(c *Config, a []Account) []Account { c.BackfillInterval.Duration = -1; return a },
 	}
 	for name, edit := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -130,7 +136,7 @@ func TestDefaults(t *testing.T) {
 	var c Config
 	c.setDefaults()
 	if c.RewriteMode != RewriteReplyTo || c.PollInterval.Duration != 3*time.Second || c.MaxSendsPerHour != 50 ||
-		c.LabelPrefix != "Bridge" || !*c.DryRun {
+		c.LabelPrefix != "Bridge" || !*c.DryRun || c.BackfillInterval.Duration != 1500*time.Millisecond {
 		t.Fatalf("defaults = %+v", c)
 	}
 }

@@ -203,7 +203,8 @@ func (b *Bridge) process(id string) error {
 		return err
 	}
 	if r == nil {
-		return b.record(id, stateIgnored, "")
+		// Conditional: the backfill may be rewriting this message right now.
+		return b.store.AddOutbound(id, OutboundRecord{State: stateUnrouted, At: b.now()})
 	}
 	if len(r.direct) > 0 {
 		b.label(id, labelMixed)
